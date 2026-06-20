@@ -266,6 +266,35 @@ def vless_link(uid=None, flow=True, port=None):
     p = urllib.parse.urlencode(params)
     return f"vless://{uid}@{SERVER_IP}:{port}?{p}#{urllib.parse.quote(REMARK)}"
 
+def clash_yaml_happ(uid=None):
+    uid = uid or UUID
+    G_PROXY, G_RU = "🌍 Весь трафик", "🇷🇺 Русские сайты"
+    proxy = {
+        "name": REMARK, "type": "vless",
+        "server": SERVER_IP, "port": PORT_HAPP, "uuid": uid,
+        "network": "tcp", "tls": True, "udp": True,
+        "reality-opts": {"public-key": PUBLIC_KEY, "short-id": SHORT_ID},
+        "servername": SNI, "client-fingerprint": "firefox",
+    }
+    rules = (
+        ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+         "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+         "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+         "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve"]
+        + [f"DOMAIN-SUFFIX,{d},{G_RU}" for d in RU_DOMAINS]
+        + [f"MATCH,{G_PROXY}"]
+    )
+    return yaml.dump({
+        "port": 7890, "socks-port": 7891, "allow-lan": True,
+        "mode": "rule", "log-level": "info",
+        "proxies": [proxy],
+        "proxy-groups": [
+            {"name": G_PROXY, "type": "select", "proxies": [REMARK, "DIRECT"]},
+            {"name": G_RU,    "type": "select", "proxies": ["DIRECT", REMARK]},
+        ],
+        "rules": rules,
+    }, allow_unicode=True, default_flow_style=False)
+
 def v2ray_sub(uid=None):
     # port 2053, no Vision flow — HAPP doesn't support xtls-rprx-vision
     return base64.b64encode(vless_link(uid, flow=False, port=PORT_HAPP).encode()).decode()
@@ -1035,8 +1064,9 @@ class Handler(BaseHTTPRequestHandler):
                 stats = get_stats()
                 all_ul = sum(v.get("uplink", 0)   for v in stats.values())
                 all_dl = sum(v.get("downlink", 0) for v in stats.values())
-                data = v2ray_sub(user["uuid"]).encode()
-                self.sub_response(data, all_ul, all_dl, token, filename=email)
+                data = clash_yaml_happ(user["uuid"]).encode()
+                self.sub_response(data, all_ul, all_dl, token,
+                                  content_type="text/yaml", filename=email)
             return
 
         self.send_response(404); self.end_headers()
