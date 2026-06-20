@@ -540,6 +540,8 @@ function loadSystem(){
     const bs=document.getElementById('bot-status');
     const ps=document.getElementById('px-status');
     const rs=document.getElementById('routing-status');
+    const ron=document.getElementById('routing-on');
+    const rof=document.getElementById('routing-off');
     if(bs){
       bs.innerHTML=d.bot
         ? '<span class="st-dot st-on"></span> Работает'
@@ -556,9 +558,6 @@ function loadSystem(){
           : '<span class="st-dot st-off"></span> Недоступен';
       }
     }
-    const rs=document.getElementById('routing-status');
-    const ron=document.getElementById('routing-on');
-    const rof=document.getElementById('routing-off');
     if(rs){
       rs.innerHTML=d.routing==='split'
         ? '<span class="st-dot st-on"></span> Включены'
