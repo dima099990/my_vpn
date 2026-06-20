@@ -302,7 +302,6 @@ def clash_yaml(uid=None):
         "flow": "xtls-rprx-vision",
         "reality-opts": {"public-key": PUBLIC_KEY, "short-id": SHORT_ID},
         "servername": SNI, "client-fingerprint": "firefox",
-        "tcp-opts": {"ip-version": "dual"},
     }
     rules = (
         ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
