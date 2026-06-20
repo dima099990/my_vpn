@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import base64, hashlib, hmac, io, json, os, secrets, subprocess, urllib.parse, yaml
+import base64, hashlib, hmac, io, json, os, secrets, subprocess, urllib.parse, yaml, zlib
 import qrcode
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
@@ -39,6 +39,17 @@ STATIC_USER = {
 
 DL_CLASH = {"win": "#", "mac": "#", "linux": "#"}
 DL_HAPP  = {"android": "#", "ios": "#"}
+
+# WINGS V — VK TURN tunnel client
+TURN_PORT      = int(os.getenv("TURN_PORT", "56000"))
+DEFAULT_VK_LINK = "https://vk.ru/call/join/ncxQNt5f1T4jGeHxrF9tsOpyNreHSqqYd9Y_eve7RTk"
+DL_WINGS = {"android": "https://github.com/WINGS-N/WINGSV/releases/latest/download/app-release.apk"}
+
+def get_vk_link() -> str:
+    return load_db().get("vk_link", DEFAULT_VK_LINK)
+
+def set_vk_link(url: str):
+    db = load_db(); db["vk_link"] = url; save_db(db)
 
 # ── auth ──────────────────────────────────────────────────────────────────────
 def make_session_token():
@@ -278,10 +289,9 @@ def vless_link(uid=None, flow=True, port=None):
     return f"vless://{uid}@{SERVER_IP}:{port}?{p}#{urllib.parse.quote(REMARK)}"
 
 def _build_clash(uid, port, flow=None):
-    G_MODE   = "⚡️ Режим"
-    G_FULL   = "🌍 Весь трафик"
-    G_SPLIT  = "🌐 Белые списки"
-    G_RU     = "🇷🇺 Русские сайты"
+    mode  = get_routing_mode()
+    G_INT = "🌍 Весь трафик" if mode == "full" else "🌍 Иностранные сайты"
+    G_RU  = "🇷🇺 Русские сайты"
     proxy = {
         "name": REMARK, "type": "vless",
         "server": SERVER_IP, "port": port, "uuid": uid,
@@ -296,21 +306,11 @@ def _build_clash(uid, port, flow=None):
              "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
              "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
              "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve"]
-    # Russian domains → G_MODE group:
-    #   when G_MODE=G_FULL  → ru sites via VPN (full tunnel)
-    #   when G_MODE=G_SPLIT → ru sites DIRECT (split)
-    # MATCH always → MyVPN (foreign traffic always via VPN)
-    mode = get_routing_mode()
-    default_mode = G_FULL if mode == "full" else G_SPLIT
+    rules  = local + [f"DOMAIN-SUFFIX,{d},{G_RU}" for d in RU_DOMAINS] + [f"MATCH,{G_INT}"]
     groups = [
-        {"name": G_MODE,  "type": "select", "proxies": [default_mode, G_FULL, G_SPLIT]},
-        {"name": G_FULL,  "type": "select", "proxies": [REMARK, "DIRECT"]},
-        {"name": G_SPLIT, "type": "select", "proxies": ["DIRECT", REMARK]},
-        {"name": G_RU,    "type": "select", "proxies": ["DIRECT", REMARK]},
+        {"name": G_INT, "type": "select", "proxies": [REMARK, "DIRECT"]},
+        {"name": G_RU,  "type": "select", "proxies": ["DIRECT", REMARK]},
     ]
-    rules = (local
-             + [f"DOMAIN-SUFFIX,{d},{G_MODE}" for d in RU_DOMAINS]
-             + [f"MATCH,{REMARK}"])
     return yaml.dump({
         "port": 7890, "socks-port": 7891, "allow-lan": True,
         "mode": "rule", "log-level": "info",
@@ -321,22 +321,7 @@ def clash_yaml_happ(uid=None):
     return _build_clash(uid or UUID, PORT_HAPP, flow=None)
 
 def v2ray_sub(uid=None):
-    # Two links: port 2053 HAPP (primary) + port 443 Vision (alternative)
-    def _link(u, flow, port, name):
-        u = u or UUID
-        params = {
-            "security": "reality", "sni": SNI, "fp": "firefox",
-            "pbk": PUBLIC_KEY, "sid": SHORT_ID,
-            "type": "tcp", "headerType": "none", "encryption": "none",
-        }
-        if flow:
-            params["flow"] = "xtls-rprx-vision"
-        p = urllib.parse.urlencode(params)
-        return f"vless://{u}@{SERVER_IP}:{port}?{p}#{urllib.parse.quote(name)}"
-    link_happ  = _link(uid, False, PORT_HAPP,  "MyVPN HAPP")
-    link_clash = _link(uid, True,  PORT_VLESS, "MyVPN Основной")
-    combined   = "\n".join([link_happ, link_clash])
-    return base64.b64encode(combined.encode()).decode()
+    return base64.b64encode(vless_link(uid, flow=False, port=PORT_HAPP).encode()).decode()
 
 RU_DOMAINS = [
     "vk.com","vk.ru","vkontakte.ru","userapi.com","vkuseraudio.net",
@@ -362,6 +347,38 @@ RU_DOMAINS = [
 
 def clash_yaml(uid=None):
     return _build_clash(uid or UUID, PORT_VLESS, flow="xtls-rprx-vision")
+
+# ── WINGS V (VK TURN) config ──────────────────────────────────────────────────
+# wingsv://{base64url(0x12 + zlib(protobuf))}  — schema: WINGS-N/3x-ui wingsv.proto
+def _pb_varint(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7f; n >>= 7
+        if n: out.append(b | 0x80)
+        else: out.append(b); break
+    return bytes(out)
+
+def _pb_v(f, v):  return _pb_varint((f << 3) | 0) + _pb_varint(v)
+def _pb_s(f, s):
+    b = s.encode() if isinstance(s, str) else s
+    return _pb_varint((f << 3) | 2) + _pb_varint(len(b)) + b
+def _pb_m(f, m):  return _pb_varint((f << 3) | 2) + _pb_varint(len(m)) + m
+
+def wingsv_config(uid=None):
+    """Combined VK TURN + VLESS profile config for WINGS V app."""
+    uid     = uid or UUID
+    vk_link = get_vk_link()
+    vless   = vless_link(uid, flow=True, port=PORT_VLESS)   # Reality vision on :443
+    pid     = "myvpn-vless"
+    endpoint = _pb_s(1, SERVER_IP) + _pb_v(2, TURN_PORT)
+    turn     = _pb_m(1, endpoint) + _pb_s(2, vk_link) + _pb_v(9, 1)   # session_mode AUTO
+    profile  = _pb_s(1, pid) + _pb_s(2, REMARK) + _pb_s(3, vless)
+    xsettings = _pb_v(14, 2)                                          # transport VK_TURN_TCP
+    xray     = _pb_s(1, pid) + _pb_m(2, profile) + _pb_m(4, xsettings)
+    config   = (_pb_v(1, 1) + _pb_v(2, 4) + _pb_m(3, turn)            # ver1, type ALL
+                + _pb_v(5, 2) + _pb_m(6, xray))                       # backend XRAY
+    framed   = bytes([0x12]) + zlib.compress(config, 9)
+    return "wingsv://" + base64.urlsafe_b64encode(framed).decode()
 
 # ── CSS / JS (shared) ─────────────────────────────────────────────────────────
 CSS = """
@@ -683,6 +700,49 @@ def user_page(user: dict) -> str:
     <div class="dlrow">
       <a class="dlbtn" href="{DL_HAPP['android']}" target="_blank">🤖 Android</a>
       <a class="dlbtn" href="{DL_HAPP['ios']}" target="_blank">🍎 iOS</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="icon icon-happ">🛡️</div>
+      <div><div class="card-title">WINGS V (обход блокировок)</div>
+        <div><span class="ptag">Android</span><span class="ptag">VK TURN</span></div></div>
+    </div>
+    <div class="card-body">
+      <div style="background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.25);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:.83rem;color:var(--m)">
+        Работает даже ночью, когда провайдер оставляет только белые списки — трафик идёт через TURN-серверы VK.
+      </div>
+      <div>
+        <div class="flabel">Конфиг для импорта (1 ссылка: VLESS + VK TURN)</div>
+        <div class="crow" id="r-wings">
+          <span class="cv">{wingsv_config(uid)}</span>
+          <button class="cb" onclick="copy('r-wings',null,this)">Копировать</button>
+        </div>
+      </div>
+      <hr class="divider">
+      <div>
+        <div class="flabel">QR-код для WINGS V</div>
+        <div class="qr-wrap">
+          <img src="data:image/png;base64,{make_qr_b64(wingsv_config(uid))}" alt="QR" width="180" height="180">
+          <p class="qr-hint">WINGS V → Добавить (+) → Импорт из QR / буфера</p>
+        </div>
+      </div>
+      <hr class="divider">
+      <div>
+        <div class="flabel">Ручная настройка (если конфиг не импортируется)</div>
+        <div style="font-size:.82rem;color:var(--m);line-height:1.7">
+          1. Импортируй VLESS-ключ от HAPP (см. карточку выше)<br>
+          2. Добавь VK TURN туннель:<br>
+          &nbsp;&nbsp;• Сервер: <b style="color:var(--t)">{SERVER_IP}:{TURN_PORT}</b><br>
+          &nbsp;&nbsp;• Ссылка VK звонка: <span style="color:var(--t);word-break:break-all">{get_vk_link()}</span><br>
+          3. В Xray-профиле включи транспорт <b style="color:var(--t)">VK TURN (TCP)</b>
+        </div>
+      </div>
+    </div>
+    <div class="dllabel">Скачать WINGS V</div>
+    <div class="dlrow">
+      <a class="dlbtn" href="{DL_WINGS['android']}" target="_blank">🤖 Android APK</a>
     </div>
   </div>
 
