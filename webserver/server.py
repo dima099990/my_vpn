@@ -253,12 +253,13 @@ def make_qr_b64(text: str) -> str:
 # ── vless / subs ──────────────────────────────────────────────────────────────
 PORT_HAPP = 2053  # fallback port without flow
 PORT_R2   = 8443  # xray2 standalone (Reality+Vision), share keys/users with main
+R2_SNI    = "vk.com"  # whitelisted SNI на 8443 — попытка обхода белых списков (если фильтр по SNI)
 
-def vless_link(uid=None, flow=True, port=None, name=None):
+def vless_link(uid=None, flow=True, port=None, name=None, sni=None):
     uid  = uid or UUID
     port = port or PORT_VLESS
     params = {
-        "security": "reality", "sni": SNI, "fp": "firefox",
+        "security": "reality", "sni": sni or SNI, "fp": "firefox",
         "pbk": PUBLIC_KEY, "sid": SHORT_ID,
         "type": "tcp", "headerType": "none", "encryption": "none",
     }
@@ -270,11 +271,11 @@ def vless_link(uid=None, flow=True, port=None, name=None):
 
 def v2ray_sub(uid=None):
     # Один токен — несколько профилей на выбор в приложении:
-    #   2053 без flow (рабочий, проходит когда 443 режут)
-    #   8443 Reality+Vision (xray2, запасной)
+    #   2053 без flow, SNI microsoft (рабочий днём, побеждает DPI)
+    #   8443 Reality+Vision, SNI vk.com (попытка обхода белых списков ночью)
     links = [
         vless_link(uid, flow=False, port=PORT_HAPP, name="MyVPN · 2053"),
-        vless_link(uid, flow=True,  port=PORT_R2,   name="MyVPN · 8443"),
+        vless_link(uid, flow=True,  port=PORT_R2,   name="MyVPN · 8443 (обход)", sni=R2_SNI),
     ]
     return base64.b64encode("\n".join(links).encode()).decode()
 
@@ -303,15 +304,15 @@ RU_DOMAINS = [
 def clash_yaml(uid=None):
     uid = uid or UUID
     G_INT, G_RU = "🌍 Иностранные сайты", "🇷🇺 Русские сайты"
-    P1, P2 = "MyVPN · 2053", "MyVPN · 8443"
+    P1, P2 = "MyVPN · 2053", "MyVPN · 8443 (обход)"
     base = {
         "type": "vless", "server": SERVER_IP, "uuid": uid,
         "network": "tcp", "tls": True, "udp": True,
         "reality-opts": {"public-key": PUBLIC_KEY, "short-id": SHORT_ID},
-        "servername": SNI, "client-fingerprint": "firefox",
+        "client-fingerprint": "firefox",
     }
-    proxy1 = {**base, "name": P1, "port": PORT_HAPP}                              # 2053 без flow
-    proxy2 = {**base, "name": P2, "port": PORT_R2, "flow": "xtls-rprx-vision"}    # 8443 vision
+    proxy1 = {**base, "name": P1, "port": PORT_HAPP, "servername": SNI}                              # 2053 microsoft
+    proxy2 = {**base, "name": P2, "port": PORT_R2, "flow": "xtls-rprx-vision", "servername": R2_SNI} # 8443 vk.com
     picks = [P1, P2, "DIRECT"]
     rules = (
         ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
