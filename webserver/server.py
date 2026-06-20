@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import base64, hashlib, hmac, io, json, os, secrets, subprocess, urllib.parse, yaml, zlib
+import base64, hashlib, hmac, io, json, os, secrets, subprocess, urllib.parse, yaml
 import qrcode
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
@@ -39,21 +39,6 @@ STATIC_USER = {
 
 DL_CLASH = {"win": "#", "mac": "#", "linux": "#"}
 DL_HAPP  = {"android": "#", "ios": "#"}
-
-# WINGS V — VK TURN tunnel client (обход белых списков через TURN-серверы VK)
-TURN_PORT       = int(os.getenv("TURN_PORT", "56000"))
-DEFAULT_VK_LINK = "https://vk.ru/call/join/ncxQNt5f1T4jGeHxrF9tsOpyNreHSqqYd9Y_eve7RTk"
-DL_WINGS = {"android": "https://github.com/WINGS-N/WINGSV/releases/latest/download/app-release.apk"}
-
-def get_vk_link() -> str:
-    return load_db().get("vk_link", DEFAULT_VK_LINK)
-
-def _load_wrap_key() -> str:
-    try:
-        return open("/opt/turnproxy/wrap_key.txt").read().strip()
-    except Exception:
-        return ""
-WRAP_KEY = _load_wrap_key()
 
 # ── auth ──────────────────────────────────────────────────────────────────────
 def make_session_token():
@@ -336,38 +321,6 @@ def clash_yaml(uid=None):
         ],
         "rules": rules,
     }, allow_unicode=True, default_flow_style=False)
-
-# ── WINGS V (VK TURN) config ──────────────────────────────────────────────────
-# wingsv://{base64url(0x12 + zlib(protobuf))} — schema: WINGS-N/3x-ui wingsv.proto
-def _pb_varint(n):
-    out = bytearray()
-    while True:
-        b = n & 0x7f; n >>= 7
-        if n: out.append(b | 0x80)
-        else: out.append(b); break
-    return bytes(out)
-
-def _pb_v(f, v):  return _pb_varint((f << 3) | 0) + _pb_varint(v)
-def _pb_s(f, s):
-    b = s.encode() if isinstance(s, str) else s
-    return _pb_varint((f << 3) | 2) + _pb_varint(len(b)) + b
-def _pb_m(f, m):  return _pb_varint((f << 3) | 2) + _pb_varint(len(m)) + m
-
-def wingsv_config(uid=None):
-    """Combined VK TURN + VLESS profile config for WINGS V app."""
-    uid     = uid or UUID
-    vk_link = get_vk_link()
-    vless   = vless_link(uid, flow=True, port=PORT_VLESS)   # Reality vision on :443
-    pid     = "myvpn-vless"
-    endpoint  = _pb_s(1, SERVER_IP) + _pb_v(2, TURN_PORT)
-    turn      = _pb_m(1, endpoint) + _pb_s(2, vk_link) + _pb_v(9, 1)   # session_mode AUTO
-    profile   = _pb_s(1, pid) + _pb_s(2, REMARK) + _pb_s(3, vless)
-    xsettings = _pb_v(14, 2)                                           # transport VK_TURN_TCP
-    xray      = _pb_s(1, pid) + _pb_m(2, profile) + _pb_m(4, xsettings)
-    config    = (_pb_v(1, 1) + _pb_v(2, 4) + _pb_m(3, turn)            # ver1, type ALL
-                 + _pb_v(5, 2) + _pb_m(6, xray))                       # backend XRAY
-    framed    = bytes([0x12]) + zlib.compress(config, 9)
-    return "wingsv://" + base64.urlsafe_b64encode(framed).decode()
 
 # ── CSS / JS (shared) ─────────────────────────────────────────────────────────
 CSS = """
@@ -673,49 +626,6 @@ def user_page(user: dict) -> str:
     <div class="dlrow">
       <a class="dlbtn" href="{DL_HAPP['android']}" target="_blank">🤖 Android</a>
       <a class="dlbtn" href="{DL_HAPP['ios']}" target="_blank">🍎 iOS</a>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-head">
-      <div class="icon icon-happ">🛡️</div>
-      <div><div class="card-title">WINGS V (обход блокировок)</div>
-        <div><span class="ptag">Android</span><span class="ptag">VK TURN</span></div></div>
-    </div>
-    <div class="card-body">
-      <div style="background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.25);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:.83rem;color:var(--m)">
-        Работает даже ночью, когда провайдер оставляет только белые списки — трафик идёт через TURN-серверы VK.
-      </div>
-      <div>
-        <div class="flabel">Конфиг для импорта (1 ссылка: VLESS + VK TURN)</div>
-        <div class="crow" id="r-wings">
-          <span class="cv">{wingsv_config(uid)}</span>
-          <button class="cb" onclick="copy('r-wings',null,this)">Копировать</button>
-        </div>
-      </div>
-      <hr class="divider">
-      <div>
-        <div class="flabel">QR-код для WINGS V</div>
-        <div class="qr-wrap">
-          <img src="data:image/png;base64,{make_qr_b64(wingsv_config(uid))}" alt="QR" width="180" height="180">
-          <p class="qr-hint">WINGS V → Добавить (+) → Импорт из QR / буфера</p>
-        </div>
-      </div>
-      <hr class="divider">
-      <div>
-        <div class="flabel">⚠️ Обязательно после импорта (иначе не будет интернета)</div>
-        <div style="font-size:.82rem;color:var(--m);line-height:1.7">
-          Настройки → <b style="color:var(--t)">Настройки VK TURN</b> → раздел «Обфускация / WRAP»:<br>
-          1. <b style="color:var(--t)">Ключ WRAP (hex)</b> — вставь:<br>
-          <span style="color:var(--g);word-break:break-all">{WRAP_KEY}</span><br>
-          2. <b style="color:var(--t)">Передавать ключ in-band</b> — <b style="color:var(--r)">ВЫКЛЮЧИ</b><br>
-          3. Переподключись
-        </div>
-      </div>
-    </div>
-    <div class="dllabel">Скачать WINGS V</div>
-    <div class="dlrow">
-      <a class="dlbtn" href="{DL_WINGS['android']}" target="_blank">🤖 Android APK</a>
     </div>
   </div>
 
