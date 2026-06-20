@@ -297,9 +297,8 @@ def clash_yaml(uid=None):
     G_INT, G_RU = "🌍 Иностранные сайты", "🇷🇺 Русские сайты"
     proxy = {
         "name": REMARK, "type": "vless",
-        "server": SERVER_IP, "port": PORT_VLESS, "uuid": uid,
+        "server": SERVER_IP, "port": PORT_HAPP, "uuid": uid,
         "network": "tcp", "tls": True, "udp": True,
-        "flow": "xtls-rprx-vision",
         "reality-opts": {"public-key": PUBLIC_KEY, "short-id": SHORT_ID},
         "servername": SNI, "client-fingerprint": "firefox",
     }
