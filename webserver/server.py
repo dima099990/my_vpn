@@ -556,9 +556,16 @@ function loadSystem(){
           : '<span class="st-dot st-off"></span> Недоступен';
       }
     }
-    const rf=document.getElementById('r-full');
-    const rs=document.getElementById('r-split');
-    if(rf&&rs){ rf.checked=d.routing==='full'; rs.checked=d.routing!=='full'; }
+    const rs=document.getElementById('routing-status');
+    const ron=document.getElementById('routing-on');
+    const rof=document.getElementById('routing-off');
+    if(rs){
+      rs.innerHTML=d.routing==='split'
+        ? '<span class="st-dot st-on"></span> Включены'
+        : '<span class="st-dot st-off"></span> Выключены';
+      if(ron) ron.disabled=d.routing==='split';
+      if(rof) rof.disabled=d.routing==='full';
+    }
   }).catch(()=>{});
 }
 
@@ -782,21 +789,14 @@ def admin_page() -> str:
       <hr class="divider">
 
       <!-- Routing mode -->
-      <div class="sys-row" style="align-items:center">
+      <div class="sys-row">
         <div class="sys-info">
-          <div class="sys-name">🌐 Роутинг подписок</div>
+          <div class="sys-name">🌐 Белые списки</div>
+          <div class="sys-status" id="routing-status"><span class="st-dot st-unknown"></span> Загрузка...</div>
         </div>
-        <div style="display:flex;gap:12px;align-items:center">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.85rem;color:var(--t)">
-            <input type="radio" name="routing" id="r-split" value="split" onchange="setRouting('split')"
-              style="accent-color:var(--p);width:16px;height:16px;cursor:pointer">
-            Белые списки
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.85rem;color:var(--t)">
-            <input type="radio" name="routing" id="r-full" value="full" onchange="setRouting('full')"
-              style="accent-color:var(--p);width:16px;height:16px;cursor:pointer">
-            Без белых списков
-          </label>
+        <div class="sys-btns">
+          <button class="sys-btn sys-btn-on"  id="routing-on"  onclick="setRouting('split')">▶ Вкл</button>
+          <button class="sys-btn sys-btn-off" id="routing-off" onclick="setRouting('full')">■ Выкл</button>
         </div>
       </div>
 
