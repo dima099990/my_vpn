@@ -252,8 +252,9 @@ def make_qr_b64(text: str) -> str:
 
 # ── vless / subs ──────────────────────────────────────────────────────────────
 PORT_HAPP = 2053  # fallback port without flow
+PORT_R2   = 8443  # xray2 standalone (Reality+Vision), share keys/users with main
 
-def vless_link(uid=None, flow=True, port=None):
+def vless_link(uid=None, flow=True, port=None, name=None):
     uid  = uid or UUID
     port = port or PORT_VLESS
     params = {
@@ -264,11 +265,18 @@ def vless_link(uid=None, flow=True, port=None):
     if flow:
         params["flow"] = "xtls-rprx-vision"
     p = urllib.parse.urlencode(params)
-    return f"vless://{uid}@{SERVER_IP}:{port}?{p}#{urllib.parse.quote(REMARK)}"
+    label = name or REMARK
+    return f"vless://{uid}@{SERVER_IP}:{port}?{p}#{urllib.parse.quote(label)}"
 
 def v2ray_sub(uid=None):
-    # port 2053, no Vision flow — HAPP doesn't support xtls-rprx-vision
-    return base64.b64encode(vless_link(uid, flow=False, port=PORT_HAPP).encode()).decode()
+    # Один токен — несколько профилей на выбор в приложении:
+    #   2053 без flow (рабочий, проходит когда 443 режут)
+    #   8443 Reality+Vision (xray2, запасной)
+    links = [
+        vless_link(uid, flow=False, port=PORT_HAPP, name="MyVPN · 2053"),
+        vless_link(uid, flow=True,  port=PORT_R2,   name="MyVPN · 8443"),
+    ]
+    return base64.b64encode("\n".join(links).encode()).decode()
 
 RU_DOMAINS = [
     "vk.com","vk.ru","vkontakte.ru","userapi.com","vkuseraudio.net",
@@ -295,13 +303,16 @@ RU_DOMAINS = [
 def clash_yaml(uid=None):
     uid = uid or UUID
     G_INT, G_RU = "🌍 Иностранные сайты", "🇷🇺 Русские сайты"
-    proxy = {
-        "name": REMARK, "type": "vless",
-        "server": SERVER_IP, "port": PORT_HAPP, "uuid": uid,
+    P1, P2 = "MyVPN · 2053", "MyVPN · 8443"
+    base = {
+        "type": "vless", "server": SERVER_IP, "uuid": uid,
         "network": "tcp", "tls": True, "udp": True,
         "reality-opts": {"public-key": PUBLIC_KEY, "short-id": SHORT_ID},
         "servername": SNI, "client-fingerprint": "firefox",
     }
+    proxy1 = {**base, "name": P1, "port": PORT_HAPP}                              # 2053 без flow
+    proxy2 = {**base, "name": P2, "port": PORT_R2, "flow": "xtls-rprx-vision"}    # 8443 vision
+    picks = [P1, P2, "DIRECT"]
     rules = (
         ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
          "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
@@ -313,10 +324,10 @@ def clash_yaml(uid=None):
     return yaml.dump({
         "port": 7890, "socks-port": 7891, "allow-lan": True,
         "mode": "rule", "log-level": "info",
-        "proxies": [proxy],
+        "proxies": [proxy1, proxy2],
         "proxy-groups": [
-            {"name": G_INT, "type": "select", "proxies": [REMARK, "DIRECT"]},
-            {"name": G_RU,  "type": "select", "proxies": ["DIRECT", REMARK]},
+            {"name": G_INT, "type": "select", "proxies": picks},
+            {"name": G_RU,  "type": "select", "proxies": ["DIRECT", P1, P2]},
         ],
         "rules": rules,
     }, allow_unicode=True, default_flow_style=False)
