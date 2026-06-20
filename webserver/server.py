@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import base64, hashlib, hmac, io, json, os, secrets, subprocess, urllib.parse, yaml, zlib
+import base64, hashlib, hmac, io, json, os, secrets, subprocess, urllib.parse, yaml
 import qrcode
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
@@ -39,17 +39,6 @@ STATIC_USER = {
 
 DL_CLASH = {"win": "#", "mac": "#", "linux": "#"}
 DL_HAPP  = {"android": "#", "ios": "#"}
-
-# WINGS V — VK TURN tunnel client
-TURN_PORT      = int(os.getenv("TURN_PORT", "56000"))
-DEFAULT_VK_LINK = "https://vk.ru/call/join/ncxQNt5f1T4jGeHxrF9tsOpyNreHSqqYd9Y_eve7RTk"
-DL_WINGS = {"android": "https://github.com/WINGS-N/WINGSV/releases/latest/download/app-release.apk"}
-
-def get_vk_link() -> str:
-    return load_db().get("vk_link", DEFAULT_VK_LINK)
-
-def set_vk_link(url: str):
-    db = load_db(); db["vk_link"] = url; save_db(db)
 
 # ── auth ──────────────────────────────────────────────────────────────────────
 def make_session_token():
@@ -112,17 +101,6 @@ def load_db() -> dict:
         return json.loads(open(USERS_FILE).read())
     except Exception:
         return {"admin_id": 0, "users": {}}
-
-def save_db(db: dict):
-    open(USERS_FILE, "w").write(json.dumps(db, ensure_ascii=False, indent=2))
-
-def get_routing_mode() -> str:
-    return load_db().get("routing_mode", "full")
-
-def set_routing_mode(mode: str):
-    db = load_db()
-    db["routing_mode"] = mode
-    save_db(db)
 
 def active_users() -> list:
     """Approved users for subscriptions."""
@@ -288,39 +266,8 @@ def vless_link(uid=None, flow=True, port=None):
     p = urllib.parse.urlencode(params)
     return f"vless://{uid}@{SERVER_IP}:{port}?{p}#{urllib.parse.quote(REMARK)}"
 
-def _build_clash(uid, port, flow=None):
-    mode  = get_routing_mode()
-    G_INT = "🌍 Весь трафик" if mode == "full" else "🌍 Иностранные сайты"
-    G_RU  = "🇷🇺 Русские сайты"
-    proxy = {
-        "name": REMARK, "type": "vless",
-        "server": SERVER_IP, "port": port, "uuid": uid,
-        "network": "tcp", "tls": True, "udp": True,
-        "reality-opts": {"public-key": PUBLIC_KEY, "short-id": SHORT_ID},
-        "servername": SNI, "client-fingerprint": "firefox",
-    }
-    if flow:
-        proxy["flow"] = flow
-    local = [f"IP-CIDR,{SERVER_IP}/32,DIRECT,no-resolve",
-             "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
-             "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
-             "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
-             "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve"]
-    rules  = local + [f"DOMAIN-SUFFIX,{d},{G_RU}" for d in RU_DOMAINS] + [f"MATCH,{G_INT}"]
-    groups = [
-        {"name": G_INT, "type": "select", "proxies": [REMARK, "DIRECT"]},
-        {"name": G_RU,  "type": "select", "proxies": ["DIRECT", REMARK]},
-    ]
-    return yaml.dump({
-        "port": 7890, "socks-port": 7891, "allow-lan": True,
-        "mode": "rule", "log-level": "info",
-        "proxies": [proxy], "proxy-groups": groups, "rules": rules,
-    }, allow_unicode=True, default_flow_style=False)
-
-def clash_yaml_happ(uid=None):
-    return _build_clash(uid or UUID, PORT_HAPP, flow=None)
-
 def v2ray_sub(uid=None):
+    # port 2053, no Vision flow — HAPP doesn't support xtls-rprx-vision
     return base64.b64encode(vless_link(uid, flow=False, port=PORT_HAPP).encode()).decode()
 
 RU_DOMAINS = [
@@ -346,39 +293,34 @@ RU_DOMAINS = [
 ]
 
 def clash_yaml(uid=None):
-    return _build_clash(uid or UUID, PORT_VLESS, flow="xtls-rprx-vision")
-
-# ── WINGS V (VK TURN) config ──────────────────────────────────────────────────
-# wingsv://{base64url(0x12 + zlib(protobuf))}  — schema: WINGS-N/3x-ui wingsv.proto
-def _pb_varint(n):
-    out = bytearray()
-    while True:
-        b = n & 0x7f; n >>= 7
-        if n: out.append(b | 0x80)
-        else: out.append(b); break
-    return bytes(out)
-
-def _pb_v(f, v):  return _pb_varint((f << 3) | 0) + _pb_varint(v)
-def _pb_s(f, s):
-    b = s.encode() if isinstance(s, str) else s
-    return _pb_varint((f << 3) | 2) + _pb_varint(len(b)) + b
-def _pb_m(f, m):  return _pb_varint((f << 3) | 2) + _pb_varint(len(m)) + m
-
-def wingsv_config(uid=None):
-    """Combined VK TURN + VLESS profile config for WINGS V app."""
-    uid     = uid or UUID
-    vk_link = get_vk_link()
-    vless   = vless_link(uid, flow=True, port=PORT_VLESS)   # Reality vision on :443
-    pid     = "myvpn-vless"
-    endpoint = _pb_s(1, SERVER_IP) + _pb_v(2, TURN_PORT)
-    turn     = _pb_m(1, endpoint) + _pb_s(2, vk_link) + _pb_v(9, 1)   # session_mode AUTO
-    profile  = _pb_s(1, pid) + _pb_s(2, REMARK) + _pb_s(3, vless)
-    xsettings = _pb_v(14, 2)                                          # transport VK_TURN_TCP
-    xray     = _pb_s(1, pid) + _pb_m(2, profile) + _pb_m(4, xsettings)
-    config   = (_pb_v(1, 1) + _pb_v(2, 4) + _pb_m(3, turn)            # ver1, type ALL
-                + _pb_v(5, 2) + _pb_m(6, xray))                       # backend XRAY
-    framed   = bytes([0x12]) + zlib.compress(config, 9)
-    return "wingsv://" + base64.urlsafe_b64encode(framed).decode()
+    uid = uid or UUID
+    G_INT, G_RU = "🌍 Иностранные сайты", "🇷🇺 Русские сайты"
+    proxy = {
+        "name": REMARK, "type": "vless",
+        "server": SERVER_IP, "port": PORT_VLESS, "uuid": uid,
+        "network": "tcp", "tls": True, "udp": True,
+        "flow": "xtls-rprx-vision",
+        "reality-opts": {"public-key": PUBLIC_KEY, "short-id": SHORT_ID},
+        "servername": SNI, "client-fingerprint": "firefox",
+    }
+    rules = (
+        ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+         "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+         "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+         "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve"]
+        + [f"DOMAIN-SUFFIX,{d},{G_RU}" for d in RU_DOMAINS]
+        + [f"MATCH,{G_INT}"]
+    )
+    return yaml.dump({
+        "port": 7890, "socks-port": 7891, "allow-lan": True,
+        "mode": "rule", "log-level": "info",
+        "proxies": [proxy],
+        "proxy-groups": [
+            {"name": G_INT, "type": "select", "proxies": [REMARK, "DIRECT"]},
+            {"name": G_RU,  "type": "select", "proxies": ["DIRECT", REMARK]},
+        ],
+        "rules": rules,
+    }, allow_unicode=True, default_flow_style=False)
 
 # ── CSS / JS (shared) ─────────────────────────────────────────────────────────
 CSS = """
@@ -575,9 +517,6 @@ function loadSystem(){
   fetch('/api/system').then(r=>r.json()).then(d=>{
     const bs=document.getElementById('bot-status');
     const ps=document.getElementById('px-status');
-    const rs=document.getElementById('routing-status');
-    const ron=document.getElementById('routing-on');
-    const rof=document.getElementById('routing-off');
     if(bs){
       bs.innerHTML=d.bot
         ? '<span class="st-dot st-on"></span> Работает'
@@ -594,20 +533,7 @@ function loadSystem(){
           : '<span class="st-dot st-off"></span> Недоступен';
       }
     }
-    if(rs){
-      rs.innerHTML=d.routing==='split'
-        ? '<span class="st-dot st-on"></span> Включены'
-        : '<span class="st-dot st-off"></span> Выключены';
-      if(ron) ron.disabled=d.routing==='split';
-      if(rof) rof.disabled=d.routing==='full';
-    }
   }).catch(()=>{});
-}
-
-function setRouting(mode){
-  fetch('/api/routing/set',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({mode:mode})})
-    .then(r=>r.json()).then(()=>loadSystem()).catch(()=>loadSystem());
 }
 
 function botAction(action){
@@ -700,49 +626,6 @@ def user_page(user: dict) -> str:
     <div class="dlrow">
       <a class="dlbtn" href="{DL_HAPP['android']}" target="_blank">🤖 Android</a>
       <a class="dlbtn" href="{DL_HAPP['ios']}" target="_blank">🍎 iOS</a>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-head">
-      <div class="icon icon-happ">🛡️</div>
-      <div><div class="card-title">WINGS V (обход блокировок)</div>
-        <div><span class="ptag">Android</span><span class="ptag">VK TURN</span></div></div>
-    </div>
-    <div class="card-body">
-      <div style="background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.25);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:.83rem;color:var(--m)">
-        Работает даже ночью, когда провайдер оставляет только белые списки — трафик идёт через TURN-серверы VK.
-      </div>
-      <div>
-        <div class="flabel">Конфиг для импорта (1 ссылка: VLESS + VK TURN)</div>
-        <div class="crow" id="r-wings">
-          <span class="cv">{wingsv_config(uid)}</span>
-          <button class="cb" onclick="copy('r-wings',null,this)">Копировать</button>
-        </div>
-      </div>
-      <hr class="divider">
-      <div>
-        <div class="flabel">QR-код для WINGS V</div>
-        <div class="qr-wrap">
-          <img src="data:image/png;base64,{make_qr_b64(wingsv_config(uid))}" alt="QR" width="180" height="180">
-          <p class="qr-hint">WINGS V → Добавить (+) → Импорт из QR / буфера</p>
-        </div>
-      </div>
-      <hr class="divider">
-      <div>
-        <div class="flabel">Ручная настройка (если конфиг не импортируется)</div>
-        <div style="font-size:.82rem;color:var(--m);line-height:1.7">
-          1. Импортируй VLESS-ключ от HAPP (см. карточку выше)<br>
-          2. Добавь VK TURN туннель:<br>
-          &nbsp;&nbsp;• Сервер: <b style="color:var(--t)">{SERVER_IP}:{TURN_PORT}</b><br>
-          &nbsp;&nbsp;• Ссылка VK звонка: <span style="color:var(--t);word-break:break-all">{get_vk_link()}</span><br>
-          3. В Xray-профиле включи транспорт <b style="color:var(--t)">VK TURN (TCP)</b>
-        </div>
-      </div>
-    </div>
-    <div class="dllabel">Скачать WINGS V</div>
-    <div class="dlrow">
-      <a class="dlbtn" href="{DL_WINGS['android']}" target="_blank">🤖 Android APK</a>
     </div>
   </div>
 
@@ -866,20 +749,6 @@ def admin_page() -> str:
 
       <hr class="divider">
 
-      <!-- Routing mode -->
-      <div class="sys-row">
-        <div class="sys-info">
-          <div class="sys-name">🌐 Белые списки</div>
-          <div class="sys-status" id="routing-status"><span class="st-dot st-unknown"></span> Загрузка...</div>
-        </div>
-        <div class="sys-btns">
-          <button class="sys-btn sys-btn-on"  id="routing-on"  onclick="setRouting('split')">▶ Вкл</button>
-          <button class="sys-btn sys-btn-off" id="routing-off" onclick="setRouting('full')">■ Выкл</button>
-        </div>
-      </div>
-
-      <hr class="divider">
-
       <!-- Proxmox -->
       <div class="sys-row">
         <div class="sys-info">
@@ -988,8 +857,7 @@ def get_system_status() -> dict:
             s.close(); px_up = True
         except Exception:
             px_up = False
-    return {"bot": bot == "active", "proxmox": px_up,
-            "proxmox_host": PROXMOX_HOST, "routing": get_routing_mode()}
+    return {"bot": bot == "active", "proxmox": px_up, "proxmox_host": PROXMOX_HOST}
 
 def bot_control(action: str) -> bool:
     cmd = "start" if action == "start" else "stop"
@@ -1086,11 +954,14 @@ class Handler(BaseHTTPRequestHandler):
             raw = get_stats()
             all_ul = sum(v.get("uplink", 0)   for v in raw.values())
             all_dl = sum(v.get("downlink", 0) for v in raw.values())
+            email = user["email"]
+            s1 = raw.get(email, {})
+            s2 = raw.get(email + "_happ", {})
             resp = json.dumps({
-                "uplink":       all_ul,
-                "downlink":     all_dl,
-                "total_server": all_ul + all_dl,
-                "limit":        TOTAL_LIMIT,
+                "uplink":        s1.get("uplink", 0)   + s2.get("uplink", 0),
+                "downlink":      s1.get("downlink", 0) + s2.get("downlink", 0),
+                "total_server":  all_ul + all_dl,
+                "limit":         TOTAL_LIMIT,
             }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1174,15 +1045,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path.startswith("/api/") and not is_authenticated(self.cookies()):
             self.send_response(401); self.end_headers(); return
-
-        if self.path == "/api/routing/set":
-            length = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(length).decode())
-            mode = body.get("mode", "full")
-            if mode in ("full", "split"):
-                set_routing_mode(mode)
-            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
-            self.wfile.write(json.dumps({"mode": get_routing_mode()}).encode()); return
 
         if self.path == "/api/bot/start":
             ok = bot_control("start")
