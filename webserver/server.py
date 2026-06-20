@@ -1008,14 +1008,11 @@ class Handler(BaseHTTPRequestHandler):
             raw = get_stats()
             all_ul = sum(v.get("uplink", 0)   for v in raw.values())
             all_dl = sum(v.get("downlink", 0) for v in raw.values())
-            email = user["email"]
-            s1 = raw.get(email, {})
-            s2 = raw.get(email + "_happ", {})
             resp = json.dumps({
-                "uplink":        s1.get("uplink", 0)   + s2.get("uplink", 0),
-                "downlink":      s1.get("downlink", 0) + s2.get("downlink", 0),
-                "total_server":  all_ul + all_dl,
-                "limit":         TOTAL_LIMIT,
+                "uplink":       all_ul,
+                "downlink":     all_dl,
+                "total_server": all_ul + all_dl,
+                "limit":        TOTAL_LIMIT,
             }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
