@@ -278,9 +278,10 @@ def vless_link(uid=None, flow=True, port=None):
     return f"vless://{uid}@{SERVER_IP}:{port}?{p}#{urllib.parse.quote(REMARK)}"
 
 def _build_clash(uid, port, flow=None):
-    mode = get_routing_mode()
-    G_PROXY = "🌍 Весь трафик" if mode == "full" else "🌍 Иностранные сайты"
-    G_RU = "🇷🇺 Русские сайты"
+    G_MODE   = "⚡️ Режим"
+    G_FULL   = "🌍 Весь трафик"
+    G_SPLIT  = "🌐 Белые списки"
+    G_RU     = "🇷🇺 Русские сайты"
     proxy = {
         "name": REMARK, "type": "vless",
         "server": SERVER_IP, "port": port, "uuid": uid,
@@ -295,18 +296,21 @@ def _build_clash(uid, port, flow=None):
              "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
              "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
              "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve"]
-    if mode == "full":
-        rules = local + [f"DOMAIN-SUFFIX,{d},{G_RU}" for d in RU_DOMAINS] + [f"MATCH,{G_PROXY}"]
-        groups = [
-            {"name": G_PROXY, "type": "select", "proxies": [REMARK, "DIRECT"]},
-            {"name": G_RU,    "type": "select", "proxies": ["DIRECT", REMARK]},
-        ]
-    else:
-        rules = local + [f"DOMAIN-SUFFIX,{d},{G_RU}" for d in RU_DOMAINS] + [f"MATCH,{G_PROXY}"]
-        groups = [
-            {"name": G_PROXY, "type": "select", "proxies": [REMARK, "DIRECT"]},
-            {"name": G_RU,    "type": "select", "proxies": ["DIRECT", REMARK]},
-        ]
+    # Russian domains → G_MODE group:
+    #   when G_MODE=G_FULL  → ru sites via VPN (full tunnel)
+    #   when G_MODE=G_SPLIT → ru sites DIRECT (split)
+    # MATCH always → MyVPN (foreign traffic always via VPN)
+    mode = get_routing_mode()
+    default_mode = G_FULL if mode == "full" else G_SPLIT
+    groups = [
+        {"name": G_MODE,  "type": "select", "proxies": [default_mode, G_FULL, G_SPLIT]},
+        {"name": G_FULL,  "type": "select", "proxies": [REMARK, "DIRECT"]},
+        {"name": G_SPLIT, "type": "select", "proxies": ["DIRECT", REMARK]},
+        {"name": G_RU,    "type": "select", "proxies": ["DIRECT", REMARK]},
+    ]
+    rules = (local
+             + [f"DOMAIN-SUFFIX,{d},{G_MODE}" for d in RU_DOMAINS]
+             + [f"MATCH,{REMARK}"])
     return yaml.dump({
         "port": 7890, "socks-port": 7891, "allow-lan": True,
         "mode": "rule", "log-level": "info",
@@ -317,8 +321,22 @@ def clash_yaml_happ(uid=None):
     return _build_clash(uid or UUID, PORT_HAPP, flow=None)
 
 def v2ray_sub(uid=None):
-    # port 2053, no Vision flow — HAPP doesn't support xtls-rprx-vision
-    return base64.b64encode(vless_link(uid, flow=False, port=PORT_HAPP).encode()).decode()
+    # Two links: port 2053 HAPP (primary) + port 443 Vision (alternative)
+    def _link(u, flow, port, name):
+        u = u or UUID
+        params = {
+            "security": "reality", "sni": SNI, "fp": "firefox",
+            "pbk": PUBLIC_KEY, "sid": SHORT_ID,
+            "type": "tcp", "headerType": "none", "encryption": "none",
+        }
+        if flow:
+            params["flow"] = "xtls-rprx-vision"
+        p = urllib.parse.urlencode(params)
+        return f"vless://{u}@{SERVER_IP}:{port}?{p}#{urllib.parse.quote(name)}"
+    link_happ  = _link(uid, False, PORT_HAPP,  "MyVPN HAPP")
+    link_clash = _link(uid, True,  PORT_VLESS, "MyVPN Основной")
+    combined   = "\n".join([link_happ, link_clash])
+    return base64.b64encode(combined.encode()).decode()
 
 RU_DOMAINS = [
     "vk.com","vk.ru","vkontakte.ru","userapi.com","vkuseraudio.net",
