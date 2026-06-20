@@ -556,20 +556,16 @@ function loadSystem(){
           : '<span class="st-dot st-off"></span> Недоступен';
       }
     }
-    if(rs){
-      rs.innerHTML=d.routing==='full'
-        ? '<span class="st-dot st-on"></span> Весь трафик через VPN'
-        : '<span class="st-dot st-unknown"></span> Только иностранные сайты';
-    }
+    const rf=document.getElementById('r-full');
+    const rs=document.getElementById('r-split');
+    if(rf&&rs){ rf.checked=d.routing==='full'; rs.checked=d.routing!=='full'; }
   }).catch(()=>{});
 }
 
-function toggleRouting(){
-  const btn=document.getElementById('routing-toggle');
-  btn.disabled=true;
-  fetch('/api/routing/toggle',{method:'POST'})
-    .then(r=>r.json()).then(()=>{ btn.disabled=false; loadSystem(); })
-    .catch(()=>{ btn.disabled=false; });
+function setRouting(mode){
+  fetch('/api/routing/set',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({mode:mode})})
+    .then(r=>r.json()).then(()=>loadSystem()).catch(()=>loadSystem());
 }
 
 function botAction(action){
@@ -786,13 +782,21 @@ def admin_page() -> str:
       <hr class="divider">
 
       <!-- Routing mode -->
-      <div class="sys-row">
+      <div class="sys-row" style="align-items:center">
         <div class="sys-info">
           <div class="sys-name">🌐 Роутинг подписок</div>
-          <div class="sys-status" id="routing-status"><span class="st-dot st-unknown"></span> Загрузка...</div>
         </div>
-        <div class="sys-btns">
-          <button class="sys-btn" id="routing-toggle" onclick="toggleRouting()">⇄ Переключить</button>
+        <div style="display:flex;gap:12px;align-items:center">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.85rem;color:var(--t)">
+            <input type="radio" name="routing" id="r-split" value="split" onchange="setRouting('split')"
+              style="accent-color:var(--p);width:16px;height:16px;cursor:pointer">
+            Белые списки
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:.85rem;color:var(--t)">
+            <input type="radio" name="routing" id="r-full" value="full" onchange="setRouting('full')"
+              style="accent-color:var(--p);width:16px;height:16px;cursor:pointer">
+            Без белых списков
+          </label>
         </div>
       </div>
 
@@ -1096,11 +1100,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/") and not is_authenticated(self.cookies()):
             self.send_response(401); self.end_headers(); return
 
-        if self.path == "/api/routing/toggle":
-            mode = "split" if get_routing_mode() == "full" else "full"
-            set_routing_mode(mode)
+        if self.path == "/api/routing/set":
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length).decode())
+            mode = body.get("mode", "full")
+            if mode in ("full", "split"):
+                set_routing_mode(mode)
             self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
-            self.wfile.write(json.dumps({"mode": mode}).encode()); return
+            self.wfile.write(json.dumps({"mode": get_routing_mode()}).encode()); return
 
         if self.path == "/api/bot/start":
             ok = bot_control("start")
