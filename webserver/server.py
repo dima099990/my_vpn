@@ -623,7 +623,6 @@ def user_page(user: dict) -> str:
           <button class="cb" onclick="copy('r-vless-happ',null,this)">Копировать</button>
         </div>
       </div>
-    </div>
       <hr class="divider">
       <div>
         <div class="flabel">QR-код для HAPP</div>
