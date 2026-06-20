@@ -102,6 +102,17 @@ def load_db() -> dict:
     except Exception:
         return {"admin_id": 0, "users": {}}
 
+def save_db(db: dict):
+    open(USERS_FILE, "w").write(json.dumps(db, ensure_ascii=False, indent=2))
+
+def get_routing_mode() -> str:
+    return load_db().get("routing_mode", "full")
+
+def set_routing_mode(mode: str):
+    db = load_db()
+    db["routing_mode"] = mode
+    save_db(db)
+
 def active_users() -> list:
     """Approved users for subscriptions."""
     db = load_db()
@@ -266,34 +277,43 @@ def vless_link(uid=None, flow=True, port=None):
     p = urllib.parse.urlencode(params)
     return f"vless://{uid}@{SERVER_IP}:{port}?{p}#{urllib.parse.quote(REMARK)}"
 
-def clash_yaml_happ(uid=None):
-    uid = uid or UUID
-    G_PROXY, G_RU = "🌍 Весь трафик", "🇷🇺 Русские сайты"
+def _build_clash(uid, port, flow=None):
+    mode = get_routing_mode()
+    G_PROXY = "🌍 Весь трафик" if mode == "full" else "🌍 Иностранные сайты"
+    G_RU = "🇷🇺 Русские сайты"
     proxy = {
         "name": REMARK, "type": "vless",
-        "server": SERVER_IP, "port": PORT_HAPP, "uuid": uid,
+        "server": SERVER_IP, "port": port, "uuid": uid,
         "network": "tcp", "tls": True, "udp": True,
         "reality-opts": {"public-key": PUBLIC_KEY, "short-id": SHORT_ID},
         "servername": SNI, "client-fingerprint": "firefox",
     }
-    rules = (
-        ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
-         "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
-         "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
-         "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve"]
-        + [f"DOMAIN-SUFFIX,{d},{G_RU}" for d in RU_DOMAINS]
-        + [f"MATCH,{G_PROXY}"]
-    )
+    if flow:
+        proxy["flow"] = flow
+    local = ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+             "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+             "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+             "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve"]
+    if mode == "full":
+        rules = local + [f"DOMAIN-SUFFIX,{d},{G_RU}" for d in RU_DOMAINS] + [f"MATCH,{G_PROXY}"]
+        groups = [
+            {"name": G_PROXY, "type": "select", "proxies": [REMARK, "DIRECT"]},
+            {"name": G_RU,    "type": "select", "proxies": ["DIRECT", REMARK]},
+        ]
+    else:
+        rules = local + [f"DOMAIN-SUFFIX,{d},{G_RU}" for d in RU_DOMAINS] + [f"MATCH,{G_PROXY}"]
+        groups = [
+            {"name": G_PROXY, "type": "select", "proxies": [REMARK, "DIRECT"]},
+            {"name": G_RU,    "type": "select", "proxies": ["DIRECT", REMARK]},
+        ]
     return yaml.dump({
         "port": 7890, "socks-port": 7891, "allow-lan": True,
         "mode": "rule", "log-level": "info",
-        "proxies": [proxy],
-        "proxy-groups": [
-            {"name": G_PROXY, "type": "select", "proxies": [REMARK, "DIRECT"]},
-            {"name": G_RU,    "type": "select", "proxies": ["DIRECT", REMARK]},
-        ],
-        "rules": rules,
+        "proxies": [proxy], "proxy-groups": groups, "rules": rules,
     }, allow_unicode=True, default_flow_style=False)
+
+def clash_yaml_happ(uid=None):
+    return _build_clash(uid or UUID, PORT_HAPP, flow=None)
 
 def v2ray_sub(uid=None):
     # port 2053, no Vision flow — HAPP doesn't support xtls-rprx-vision
@@ -322,34 +342,7 @@ RU_DOMAINS = [
 ]
 
 def clash_yaml(uid=None):
-    uid = uid or UUID
-    G_PROXY, G_RU = "🌍 Весь трафик", "🇷🇺 Русские сайты"
-    proxy = {
-        "name": REMARK, "type": "vless",
-        "server": SERVER_IP, "port": PORT_VLESS, "uuid": uid,
-        "network": "tcp", "tls": True, "udp": True,
-        "flow": "xtls-rprx-vision",
-        "reality-opts": {"public-key": PUBLIC_KEY, "short-id": SHORT_ID},
-        "servername": SNI, "client-fingerprint": "firefox",
-    }
-    rules = (
-        ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
-         "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
-         "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
-         "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve"]
-        + [f"DOMAIN-SUFFIX,{d},{G_RU}" for d in RU_DOMAINS]
-        + [f"MATCH,{G_PROXY}"]
-    )
-    return yaml.dump({
-        "port": 7890, "socks-port": 7891, "allow-lan": True,
-        "mode": "rule", "log-level": "info",
-        "proxies": [proxy],
-        "proxy-groups": [
-            {"name": G_PROXY, "type": "select", "proxies": [REMARK, "DIRECT"]},
-            {"name": G_RU,    "type": "select", "proxies": ["DIRECT", REMARK]},
-        ],
-        "rules": rules,
-    }, allow_unicode=True, default_flow_style=False)
+    return _build_clash(uid or UUID, PORT_VLESS, flow="xtls-rprx-vision")
 
 # ── CSS / JS (shared) ─────────────────────────────────────────────────────────
 CSS = """
@@ -546,6 +539,7 @@ function loadSystem(){
   fetch('/api/system').then(r=>r.json()).then(d=>{
     const bs=document.getElementById('bot-status');
     const ps=document.getElementById('px-status');
+    const rs=document.getElementById('routing-status');
     if(bs){
       bs.innerHTML=d.bot
         ? '<span class="st-dot st-on"></span> Работает'
@@ -562,7 +556,20 @@ function loadSystem(){
           : '<span class="st-dot st-off"></span> Недоступен';
       }
     }
+    if(rs){
+      rs.innerHTML=d.routing==='full'
+        ? '<span class="st-dot st-on"></span> Весь трафик через VPN'
+        : '<span class="st-dot st-unknown"></span> Только иностранные сайты';
+    }
   }).catch(()=>{});
+}
+
+function toggleRouting(){
+  const btn=document.getElementById('routing-toggle');
+  btn.disabled=true;
+  fetch('/api/routing/toggle',{method:'POST'})
+    .then(r=>r.json()).then(()=>{ btn.disabled=false; loadSystem(); })
+    .catch(()=>{ btn.disabled=false; });
 }
 
 function botAction(action){
@@ -778,6 +785,19 @@ def admin_page() -> str:
 
       <hr class="divider">
 
+      <!-- Routing mode -->
+      <div class="sys-row">
+        <div class="sys-info">
+          <div class="sys-name">🌐 Роутинг подписок</div>
+          <div class="sys-status" id="routing-status"><span class="st-dot st-unknown"></span> Загрузка...</div>
+        </div>
+        <div class="sys-btns">
+          <button class="sys-btn" id="routing-toggle" onclick="toggleRouting()">⇄ Переключить</button>
+        </div>
+      </div>
+
+      <hr class="divider">
+
       <!-- Proxmox -->
       <div class="sys-row">
         <div class="sys-info">
@@ -886,7 +906,8 @@ def get_system_status() -> dict:
             s.close(); px_up = True
         except Exception:
             px_up = False
-    return {"bot": bot == "active", "proxmox": px_up, "proxmox_host": PROXMOX_HOST}
+    return {"bot": bot == "active", "proxmox": px_up,
+            "proxmox_host": PROXMOX_HOST, "routing": get_routing_mode()}
 
 def bot_control(action: str) -> bool:
     cmd = "start" if action == "start" else "stop"
@@ -1064,9 +1085,8 @@ class Handler(BaseHTTPRequestHandler):
                 stats = get_stats()
                 all_ul = sum(v.get("uplink", 0)   for v in stats.values())
                 all_dl = sum(v.get("downlink", 0) for v in stats.values())
-                data = clash_yaml_happ(user["uuid"]).encode()
-                self.sub_response(data, all_ul, all_dl, token,
-                                  content_type="text/yaml", filename=email)
+                data = v2ray_sub(user["uuid"]).encode()
+                self.sub_response(data, all_ul, all_dl, token, filename=email)
             return
 
         self.send_response(404); self.end_headers()
@@ -1075,6 +1095,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path.startswith("/api/") and not is_authenticated(self.cookies()):
             self.send_response(401); self.end_headers(); return
+
+        if self.path == "/api/routing/toggle":
+            mode = "split" if get_routing_mode() == "full" else "full"
+            set_routing_mode(mode)
+            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"mode": mode}).encode()); return
 
         if self.path == "/api/bot/start":
             ok = bot_control("start")
