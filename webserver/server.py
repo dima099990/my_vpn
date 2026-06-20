@@ -200,7 +200,8 @@ def snapshot_stats():
     _save_persistent(saved)
 
 EMAIL_ALIASES = {
-    "user1_admin": "user1",
+    "user1_admin":      "user1",
+    "user1_admin_happ": "user1_happ",
 }
 
 def _merge_aliases(d: dict) -> dict:
@@ -955,10 +956,12 @@ class Handler(BaseHTTPRequestHandler):
             all_users = all_users_for_stats()
             tot = sum(s.get("uplink", 0) + s.get("downlink", 0)
                       for s in (raw.get(u["email"], {}) for u in all_users))
-            s = raw.get(user["email"], {})
+            email = user["email"]
+            s1 = raw.get(email, {})
+            s2 = raw.get(email + "_happ", {})
             resp = json.dumps({
-                "uplink":        s.get("uplink", 0),
-                "downlink":      s.get("downlink", 0),
+                "uplink":        s1.get("uplink", 0)   + s2.get("uplink", 0),
+                "downlink":      s1.get("downlink", 0) + s2.get("downlink", 0),
                 "total_server":  tot,
                 "limit":         TOTAL_LIMIT,
             }).encode()
@@ -1026,10 +1029,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.html("<h2 style='font-family:sans-serif;color:#f87171;padding:40px'>Ссылка недействительна или доступ отозван.</h2>", 404)
                 return
             email = user.get("email", "myvpn")
-            s = get_stats().get(email, {})
             if is_browser(ua):
                 self.html(user_page(user))
             else:
+                stats = get_stats()
+                happ_email = email + "_happ"
+                s = stats.get(happ_email, {})
                 data = v2ray_sub(user["uuid"]).encode()
                 self.sub_response(data, s.get("uplink", 0), s.get("downlink", 0),
                                   token, filename=email)
