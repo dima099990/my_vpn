@@ -290,7 +290,8 @@ def _build_clash(uid, port, flow=None):
     }
     if flow:
         proxy["flow"] = flow
-    local = ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+    local = [f"IP-CIDR,{SERVER_IP}/32,DIRECT,no-resolve",
+             "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
              "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
              "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
              "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve"]
