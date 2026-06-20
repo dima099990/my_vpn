@@ -190,8 +190,8 @@ def _query_live() -> dict:
 
 def snapshot_stats():
     """Call before xray restart to persist current counters."""
-    live = _query_live()
-    saved = _load_persistent()
+    live  = _merge_aliases(_query_live())
+    saved = _merge_aliases(_load_persistent())
     for email, vals in live.items():
         if email not in saved:
             saved[email] = {"uplink": 0, "downlink": 0}
@@ -199,12 +199,25 @@ def snapshot_stats():
         saved[email]["downlink"] += vals.get("downlink", 0)
     _save_persistent(saved)
 
+EMAIL_ALIASES = {
+    "user1_admin": "user1",
+}
+
+def _merge_aliases(d: dict) -> dict:
+    out = {}
+    for email, vals in d.items():
+        key = EMAIL_ALIASES.get(email, email)
+        if key not in out:
+            out[key] = {"uplink": 0, "downlink": 0}
+        out[key]["uplink"]   += vals.get("uplink", 0)
+        out[key]["downlink"] += vals.get("downlink", 0)
+    return out
+
 def get_stats() -> dict:
-    saved = _load_persistent()
-    live  = _query_live()
+    saved = _merge_aliases(_load_persistent())
+    live  = _merge_aliases(_query_live())
     out   = {}
-    all_emails = set(saved) | set(live)
-    for email in all_emails:
+    for email in set(saved) | set(live):
         s = saved.get(email, {})
         l = live.get(email, {})
         out[email] = {
