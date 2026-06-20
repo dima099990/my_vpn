@@ -1033,11 +1033,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.html(user_page(user))
             else:
                 stats = get_stats()
-                happ_email = email + "_happ"
-                s = stats.get(happ_email, {})
+                all_ul = sum(v.get("uplink", 0)   for v in stats.values())
+                all_dl = sum(v.get("downlink", 0) for v in stats.values())
                 data = v2ray_sub(user["uuid"]).encode()
-                self.sub_response(data, s.get("uplink", 0), s.get("downlink", 0),
-                                  token, filename=email)
+                self.sub_response(data, all_ul, all_dl, token, filename=email)
             return
 
         self.send_response(404); self.end_headers()
