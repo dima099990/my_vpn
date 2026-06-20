@@ -1015,9 +1015,11 @@ class Handler(BaseHTTPRequestHandler):
             if not user:
                 self.send_response(404); self.end_headers(); return
             email = user.get("email", "myvpn")
-            s = get_stats().get(email, {})
+            stats = get_stats()
+            all_ul = sum(v.get("uplink", 0)   for v in stats.values())
+            all_dl = sum(v.get("downlink", 0) for v in stats.values())
             data = clash_yaml(user["uuid"]).encode()
-            self.sub_response(data, s.get("uplink", 0), s.get("downlink", 0),
+            self.sub_response(data, all_ul, all_dl,
                               token, content_type="text/yaml", filename=email)
             return
 
