@@ -294,7 +294,7 @@ RU_DOMAINS = [
 
 def clash_yaml(uid=None):
     uid = uid or UUID
-    G_INT, G_RU = "🌍 Иностранные сайты", "🇷🇺 Русские сайты"
+    G_PROXY, G_RU = "🌍 Весь трафик", "🇷🇺 Русские сайты"
     proxy = {
         "name": REMARK, "type": "vless",
         "server": SERVER_IP, "port": PORT_VLESS, "uuid": uid,
@@ -309,15 +309,15 @@ def clash_yaml(uid=None):
          "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
          "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve"]
         + [f"DOMAIN-SUFFIX,{d},{G_RU}" for d in RU_DOMAINS]
-        + [f"MATCH,{G_INT}"]
+        + [f"MATCH,{G_PROXY}"]
     )
     return yaml.dump({
         "port": 7890, "socks-port": 7891, "allow-lan": True,
         "mode": "rule", "log-level": "info",
         "proxies": [proxy],
         "proxy-groups": [
-            {"name": G_INT, "type": "select", "proxies": [REMARK, "DIRECT"]},
-            {"name": G_RU,  "type": "select", "proxies": ["DIRECT", REMARK]},
+            {"name": G_PROXY, "type": "select", "proxies": [REMARK, "DIRECT"]},
+            {"name": G_RU,    "type": "select", "proxies": ["DIRECT", REMARK]},
         ],
         "rules": rules,
     }, allow_unicode=True, default_flow_style=False)
