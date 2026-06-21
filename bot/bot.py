@@ -107,8 +107,10 @@ def xray_remove(email: str):
 def gen_token() -> str:
     return base64.urlsafe_b64encode(secrets.token_bytes(24)).decode().rstrip("=")
 
+DOMAIN = os.getenv("DOMAIN", "shocknet.online")
+
 def sub_url(token: str) -> str:
-    return f"http://{SERVER_IP}/sub/{token}"
+    return f"https://{DOMAIN}/sub/{token}"
 
 def fmt_date(ts: float) -> str:
     import datetime
@@ -130,12 +132,15 @@ def cleanup_expired_trials():
 
 # ── admin menu ────────────────────────────────────────────────────────────────
 
+STATIC_TOKEN = os.getenv("STATIC_TOKEN", "user1")
+
 def admin_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 Пользователи",    callback_data="menu:users"),
          InlineKeyboardButton("🔑 Тест ключи",      callback_data="menu:trial")],
         [InlineKeyboardButton("🎁 Создать тест ключ", callback_data="menu:new_trial"),
          InlineKeyboardButton("❌ Убрать подписку",  callback_data="menu:revoke")],
+        [InlineKeyboardButton("🔗 Мой конфиг (user1)", callback_data="menu:my_config")],
     ])
 
 async def send_admin_menu(target, ctx, text="👑 Меню администратора:"):
@@ -281,6 +286,15 @@ async def cb_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         rows.append([InlineKeyboardButton("« Назад", callback_data="menu:back")])
         await query.edit_message_text("Выбери пользователя для отзыва доступа:",
             reply_markup=InlineKeyboardMarkup(rows))
+
+    # ── my config ──
+    elif action == "my_config":
+        url = sub_url(STATIC_TOKEN)
+        await query.edit_message_text(
+            f"🔗 *Твой конфиг (user1):*\n\n`{url}`",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data="menu:back")]]),
+            parse_mode="Markdown")
 
     # ── back to main menu ──
     elif action == "back":

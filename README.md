@@ -1,73 +1,161 @@
-# MyVPN — Self-hosted VPN Server
+# ShockNet VPN Server
 
-Личный VPN-сервер на базе **Xray VLESS+Reality** с веб-панелью, Telegram-ботом и поддержкой Koala Clash и HAPP.
+Самохостинговый VPN сервер на базе **Xray-core** с VLESS+Reality и VLESS+WebSocket+TLS.  
+Включает веб-сервер для подписок, панель администратора и Telegram-бота для управления.
 
-## Возможности
+---
 
-- **VLESS + Reality** — маскировка под легитимный TLS трафик
-- **Koala Clash** (порт 443, Vision flow) — для ПК (Windows/macOS/Linux)
-- **HAPP** (порт 2053, без flow) — для телефона (Android/iOS)
-- **Веб-панель** — личная страница для каждого пользователя с QR-кодом и статистикой трафика
-- **Telegram бот** — выдача и отзыв доступа, тестовые ключи на 7 дней
-- **Персистентная статистика** — счётчик трафика не сбрасывается при рестарте
-- **Proxmox управление** — кнопка выключения домашнего сервера из веб-панели
-
-## Структура
+## Архитектура
 
 ```
-├── bot/
-│   └── bot.py              # Telegram бот (python-telegram-bot v22)
+Клиент
+  ├── HAPP (Android/iOS)       → VLESS+Reality   → сервер:2053
+  ├── Koala Clash (Win/Mac)    → VLESS+Reality   → сервер:2053
+  └── Любой клиент             → VLESS+WS+TLS    → nginx:443 → xray:8880
+
+Сервер (Ubuntu)
+  ├── xray          — ядро, обрабатывает входящие соединения
+  ├── nginx         — TLS терминация, проксирует WS и веб
+  ├── subserver     — HTTP сервер: подписки, лендинг, админка
+  └── vpnbot        — Telegram бот для управления и выдачи конфигов
+```
+
+## Порты
+
+| Порт  | Протокол | Назначение |
+|-------|----------|------------|
+| 80    | HTTP     | nginx → redirect на HTTPS |
+| 443   | HTTPS    | nginx → WS→Xray + веб |
+| 2053  | TCP      | Xray VLESS+Reality (основной, без flow) |
+| 4443  | TCP      | Xray VLESS+Reality+Vision (альтернативный) |
+| 8443  | TCP      | Xray2 standalone (Reality, SNI vk.com) |
+| 8008  | TCP      | subserver (localhost only) |
+| 8880  | TCP      | Xray WS inbound (localhost only) |
+| 10085 | TCP      | Xray API (localhost only) |
+
+---
+
+## Структура репозитория
+
+```
 ├── webserver/
-│   └── server.py           # Веб-сервер (порт 80), подписки, статистика
+│   └── server.py            # Subscription + admin HTTP server
+├── bot/
+│   └── bot.py               # Telegram bot
 ├── xray/
-│   └── config.example.json # Шаблон конфига Xray
-├── systemd/                # systemd unit файлы
-├── .env.example            # Шаблон переменных окружения
+│   └── config.example.json  # Пример конфига Xray (без приватных ключей)
+├── systemd/
+│   ├── xray.service
+│   ├── subserver.service
+│   └── vpnbot.service
 └── README.md
 ```
+
+---
 
 ## Установка
 
 ### 1. Зависимости
 
 ```bash
-apt install python3-pip -y
-pip3 install python-telegram-bot python-dotenv pyyaml qrcode[pil]
+apt update && apt install -y python3 python3-pip nginx certbot python3-certbot-nginx
+pip3 install pyyaml python-telegram-bot
 ```
 
 ### 2. Xray
 
 ```bash
 mkdir -p /opt/xray
-# Скачать последний релиз с https://github.com/XTLS/Xray-core/releases
-# Распаковать в /opt/xray/
-cp xray/config.example.json /opt/xray/config.json
-# Заполнить ключи (сгенерировать: /opt/xray/xray x25519)
+# Скачать актуальный релиз с github.com/XTLS/Xray-core/releases
+wget -O /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+unzip /tmp/xray.zip -d /opt/xray/
+chmod +x /opt/xray/xray
 ```
 
-### 3. Переменные окружения
+Сгенерировать ключи Reality:
+```bash
+/opt/xray/xray x25519
+# Сохрани publicKey и privateKey
+```
+
+Скопировать `xray/config.example.json` → `/opt/xray/config.json` и заполнить:
+- `privateKey` — приватный ключ Reality
+- `uuid` клиентов
+- `shortIds`
+
+### 3. Веб-сервер подписок
 
 ```bash
-mkdir -p /opt/vpnserver
-cp .env.example /opt/vpnserver/.env
-nano /opt/vpnserver/.env  # заполнить все значения
+mkdir -p /opt/subserver
+cp webserver/server.py /opt/subserver/
 ```
 
-Генерация Xray ключей:
-```bash
-/opt/xray/xray x25519          # приватный и публичный ключ
-openssl rand -hex 8             # short ID
-cat /proc/sys/kernel/random/uuid  # UUID пользователя
+Создать `/opt/vpnserver/.env`:
+```env
+BOT_TOKEN=telegram_bot_token
+BOT_USERNAME=your_bot_username
+SESSION_SECRET=random_hex_32_bytes
+DOMAIN=your.domain.com
+SERVER_IP=1.2.3.4
+XRAY_PUBLIC_KEY=...
+XRAY_SHORT_ID=...
+XRAY_UUID=...
+XRAY_SNI=www.microsoft.com
+ADMIN_TG_ID=your_telegram_id
 ```
 
-### 4. Файлы данных
+### 4. Telegram бот
 
 ```bash
 mkdir -p /opt/vpnbot
-echo '{"admin_id": 0, "users": {}, "trial_keys": {}}' > /opt/vpnbot/users.json
+cp bot/bot.py /opt/vpnbot/
 ```
 
-### 5. Сервисы
+Файл `/opt/vpnbot/users.json` создаётся автоматически при первом запуске.
+
+### 5. nginx
+
+Пример конфига `/etc/nginx/sites-available/shocknet`:
+```nginx
+server {
+    listen 80;
+    server_name your.domain.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name your.domain.com;
+
+    ssl_certificate     /etc/letsencrypt/live/your.domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/your.domain.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # WebSocket → Xray
+    location /vless {
+        proxy_pass http://127.0.0.1:8880;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 300s;
+    }
+
+    # Subscription server
+    location / {
+        proxy_pass http://127.0.0.1:8008;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+SSL через Certbot:
+```bash
+certbot --nginx -d your.domain.com
+```
+
+### 6. systemd сервисы
 
 ```bash
 cp systemd/*.service /etc/systemd/system/
@@ -75,44 +163,79 @@ systemctl daemon-reload
 systemctl enable --now xray subserver vpnbot
 ```
 
-## Конфигурация
+---
 
-Все секреты хранятся в `/opt/vpnserver/.env` (см. `.env.example`):
+## Управление пользователями
+
+Через Telegram бота (команда `/start` от admin):
+- **Добавить пользователя** — генерирует UUID, добавляет в Xray и выдаёт ссылку подписки
+- **Одобрить / заблокировать** — управление доступом без перезапуска Xray
+- **Статистика трафика** — upload/download на каждого пользователя
+
+Ссылки подписки:
+```
+https://your.domain.com/sub/{token}           # HAPP / универсальная
+https://your.domain.com/sub/clash/{token}     # Koala Clash / Mihomo
+```
+
+---
+
+## Панель администратора
+
+Доступна по адресу `https://your.domain.com/admin`  
+Авторизация через **Telegram Login Widget** (бот должен иметь настроенный домен в BotFather).
+
+Возможности:
+- Статус всех сервисов (xray, vpnbot, subserver)
+- Управление пользователями (добавить, одобрить, заблокировать, сбросить трафик)
+- Мониторинг сервера — CPU, RAM, диск, сетевой трафик (графики за последний час)
+- QR-коды и ссылки подписок для каждого пользователя
+
+---
+
+## Протоколы и маскировка
+
+### VLESS + Reality (порт 2053)
+- Маскируется под TLS трафик к `www.microsoft.com`
+- SNI подделывается через реальный TLS handshake с Microsoft
+- Провайдер видит обычный HTTPS к Microsoft
+
+### VLESS + WebSocket + TLS (порт 443)
+- Трафик идёт через nginx как обычный HTTPS
+- WS путь `/vless` выглядит как обычный API запрос
+- Подходит для сетей где блокируют нестандартные порты
+
+---
+
+## Статистика трафика
+
+Счётчики хранятся в Xray API и персистируются в `/opt/vpnbot/stats_persistent.json`.  
+При перезапуске Xray данные не теряются — счётчик сбрасывается с `--reset` каждые 5 минут и добавляется в файл.
+
+---
+
+## Переменные окружения
 
 | Переменная | Описание |
-|---|---|
-| `BOT_TOKEN` | Токен Telegram бота (@BotFather) |
-| `ADMIN_USERNAME` | Username администратора в Telegram (без @) |
-| `SERVER_IP` | IP-адрес сервера |
-| `ADMIN_PASSWORD` | Пароль веб-панели |
-| `XRAY_PRIVATE_KEY` | Приватный ключ Reality |
+|------------|----------|
+| `BOT_TOKEN` | Токен Telegram бота |
+| `BOT_USERNAME` | Username бота (без @) |
+| `SESSION_SECRET` | Секрет для сессий админки (hex, 32 байта) |
+| `DOMAIN` | Домен сервера |
+| `SERVER_IP` | IP сервера |
 | `XRAY_PUBLIC_KEY` | Публичный ключ Reality |
 | `XRAY_SHORT_ID` | Short ID Reality |
-| `XRAY_SNI` | SNI (домен для маскировки) |
-| `STATIC_UUID` | UUID администратора |
-| `PROXMOX_HOST` | IP домашнего сервера Proxmox |
+| `XRAY_UUID` | UUID по умолчанию |
+| `XRAY_SNI` | SNI для маскировки (например `www.microsoft.com`) |
+| `ADMIN_TG_ID` | Telegram ID администратора |
 
-## Использование
+---
 
-### Веб-панель
-- **Админка**: `http://SERVER_IP/` (логин/пароль из `.env`)
-- **Личная страница**: `http://SERVER_IP/sub/TOKEN`
+## Требования
 
-### Telegram бот
-- `/start` — меню (для администратора) или запрос доступа (для пользователя)
-- Кнопки: 👥 Пользователи | 🔑 Тест ключи | 🎁 Создать тест ключ | ❌ Убрать подписку
-
-### Подписки
-| Приложение | URL |
-|---|---|
-| HAPP (Android/iOS) | `http://SERVER_IP/sub/TOKEN` |
-| Koala Clash | `http://SERVER_IP/sub/clash/TOKEN` |
-
-## Порты
-
-| Порт | Назначение |
-|---|---|
-| 80 | Веб-панель и подписки |
-| 443 | VLESS+Reality для Koala Clash (Vision flow) |
-| 2053 | VLESS+Reality для HAPP (без flow) |
-| 10085 | Xray Stats API (только localhost) |
+- Ubuntu 20.04+
+- Python 3.10+
+- nginx
+- Xray-core 24.x+
+- Домен с SSL сертификатом
+- Telegram бот (зарегистрировать через @BotFather)

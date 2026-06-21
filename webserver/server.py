@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import base64, hashlib, hmac, io, json, os, secrets, subprocess, urllib.parse, yaml
+import base64, collections, hashlib, hmac, io, json, os, secrets, subprocess, threading, time, urllib.parse, yaml
 import qrcode
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
@@ -8,19 +8,23 @@ load_dotenv("/opt/vpnserver/.env")
 
 # ── config ────────────────────────────────────────────────────────────────────
 SERVER_IP   = os.getenv("SERVER_IP", "")
+DOMAIN        = os.getenv("DOMAIN", "shocknet.online")
+
 UUID        = os.getenv("STATIC_UUID", "")
 PUBLIC_KEY  = os.getenv("XRAY_PUBLIC_KEY", "")
 SHORT_ID    = os.getenv("XRAY_SHORT_ID", "")
-PORT_VLESS  = int(os.getenv("XRAY_PORT", "443"))
+PORT_VLESS  = int(os.getenv("XRAY_PORT", "4443"))
+PORT_WS     = 443  # nginx TLS → xray WS на 8880
 SNI         = os.getenv("XRAY_SNI", "www.microsoft.com")
-REMARK      = "MyVPN"
-WEB_PORT    = 80
+REMARK      = "ShockNet"
+WEB_PORT    = 8008
 XRAY_API    = "127.0.0.1:10085"
 USERS_FILE  = "/opt/vpnbot/users.json"
 TOTAL_LIMIT = 3 * 1024 ** 4
 
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
-SESSION_SECRET = secrets.token_hex(32)
+BOT_TOKEN      = os.getenv("BOT_TOKEN", "")
+BOT_USERNAME   = os.getenv("BOT_USERNAME", "myvpngift_bot")
+SESSION_SECRET = os.getenv("SESSION_SECRET") or secrets.token_hex(32)
 
 PROXMOX_HOST        = os.getenv("PROXMOX_HOST", "")
 PROXMOX_SSH_PORT    = int(os.getenv("PROXMOX_SSH_PORT", "22"))
@@ -55,43 +59,49 @@ def is_authenticated(cookie_header: str) -> bool:
             return True
     return False
 
-LOGIN_HTML = """<!DOCTYPE html>
+def verify_telegram_auth(data: dict) -> bool:
+    """Проверяем подпись от Telegram Login Widget."""
+    check_hash = data.get("hash", "")
+    auth_date  = int(data.get("auth_date", 0))
+    # Подпись не старше 24 часов
+    if abs(time.time() - auth_date) > 86400:
+        return False
+    fields = {k: v for k, v in data.items() if k != "hash"}
+    check_string = "\n".join(f"{k}={v}" for k, v in sorted(fields.items()))
+    secret = hashlib.sha256(BOT_TOKEN.encode()).digest()
+    computed = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(computed, check_hash)
+
+LOGIN_HTML = f"""<!DOCTYPE html>
 <html lang="ru"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MyVPN — Вход</title>
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#0d0d12;color:#e2e8f0;font-family:-apple-system,'Segoe UI',sans-serif;
-  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
-.box{background:#16161f;border:1px solid rgba(255,255,255,0.07);border-radius:20px;
-  padding:40px;width:100%;max-width:360px}
-h2{font-size:1.5rem;font-weight:700;margin-bottom:6px;
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:#0d0d12;color:#e2e8f0;font-family:-apple-system,'Segoe UI',sans-serif;
+  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}}
+.box{{background:#16161f;border:1px solid rgba(255,255,255,0.07);border-radius:20px;
+  padding:40px;width:100%;max-width:360px;text-align:center}}
+h2{{font-size:1.5rem;font-weight:700;margin-bottom:6px;
   background:linear-gradient(135deg,#e2e8f0,#a78bfa);
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.sub{color:#64748b;font-size:.85rem;margin-bottom:28px}
-label{display:block;font-size:.75rem;color:#64748b;text-transform:uppercase;
-  letter-spacing:.06em;margin-bottom:6px}
-input{width:100%;background:#1e1e2a;border:1px solid rgba(255,255,255,0.08);
-  border-radius:9px;padding:11px 14px;color:#e2e8f0;font-size:.95rem;outline:none;
-  transition:border-color .15s}
-input:focus{border-color:#a78bfa}
-.err{color:#f87171;font-size:.8rem;margin-top:8px;display:none}
-.err.show{display:block}
-button{width:100%;margin-top:20px;background:linear-gradient(135deg,#7c3aed,#4f46e5);
-  border:none;border-radius:9px;color:#fff;padding:13px;font-size:.95rem;font-weight:600;
-  cursor:pointer;transition:opacity .15s}
-button:hover{opacity:.88}
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.sub{{color:#64748b;font-size:.85rem;margin-bottom:32px}}
+.tg-wrap{{display:flex;justify-content:center}}
+.err{{color:#f87171;font-size:.8rem;margin-top:16px;display:none}}
+.err.show{{display:block}}
 </style></head>
 <body>
 <div class="box">
   <h2>MyVPN Admin</h2>
-  <p class="sub">Введите пароль для доступа</p>
-  <form method="POST" action="/login">
-    <label>Пароль</label>
-    <input type="password" name="password" autofocus placeholder="••••••••">
-    <div class="err" id="err">WRONG_MSG</div>
-    <button type="submit">Войти</button>
-  </form>
+  <p class="sub">Войдите через Telegram</p>
+  <div class="tg-wrap">
+    <script async src="https://telegram.org/js/telegram-widget.js?22"
+      data-telegram-login="{BOT_USERNAME}"
+      data-size="large"
+      data-auth-url="https://{DOMAIN}/tg-auth"
+      data-request-access="write"></script>
+  </div>
+  <div class="err ERRCLASS" id="err">ERRMSG</div>
 </div>
 </body></html>"""
 
@@ -168,12 +178,12 @@ def _save_persistent(data: dict):
     except Exception:
         pass
 
-def _query_live() -> dict:
+def _query_xray(reset: bool = False) -> dict:
+    cmd = ["/opt/xray/xray", "api", "statsquery", f"--server={XRAY_API}"]
+    if reset:
+        cmd.append("--reset")
     try:
-        r = subprocess.run(
-            ["/opt/xray/xray", "api", "statsquery", f"--server={XRAY_API}"],
-            capture_output=True, text=True, timeout=3
-        )
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
         data = json.loads(r.stdout)
         out = {}
         for item in data.get("stat", []):
@@ -188,33 +198,22 @@ def _query_live() -> dict:
     except Exception:
         return {}
 
+def _query_live() -> dict:
+    return _query_xray(reset=False)
+
 def snapshot_stats():
-    """Call before xray restart to persist current counters."""
-    live  = _merge_aliases(_query_live())
+    """Считываем счётчики с --reset (дельта с прошлого snapshot) и прибавляем к persistent."""
+    delta = _merge_aliases(_query_xray(reset=True))
     saved = _merge_aliases(_load_persistent())
-    for email, vals in live.items():
+    for email, vals in delta.items():
         if email not in saved:
             saved[email] = {"uplink": 0, "downlink": 0}
         saved[email]["uplink"]   += vals.get("uplink", 0)
         saved[email]["downlink"] += vals.get("downlink", 0)
     _save_persistent(saved)
 
-EMAIL_ALIASES = {
-    "user1_admin":      "user1",
-    "user1_admin_happ": "user1_happ",
-}
-
-def _merge_aliases(d: dict) -> dict:
-    out = {}
-    for email, vals in d.items():
-        key = EMAIL_ALIASES.get(email, email)
-        if key not in out:
-            out[key] = {"uplink": 0, "downlink": 0}
-        out[key]["uplink"]   += vals.get("uplink", 0)
-        out[key]["downlink"] += vals.get("downlink", 0)
-    return out
-
 def get_stats() -> dict:
+    """persistent (всё до последнего snapshot) + live (с момента последнего snapshot)."""
     saved = _merge_aliases(_load_persistent())
     live  = _merge_aliases(_query_live())
     out   = {}
@@ -227,15 +226,131 @@ def get_stats() -> dict:
         }
     return out
 
+def user_traffic(stats: dict, email: str) -> tuple:
+    """Суммарный трафик пользователя — основной + _happ алиас. Единая точка расчёта."""
+    s1 = stats.get(email, {})
+    s2 = stats.get(email + "_happ", {})
+    ul = s1.get("uplink", 0)   + s2.get("uplink", 0)
+    dl = s1.get("downlink", 0) + s2.get("downlink", 0)
+    return ul, dl
+
+EMAIL_ALIASES = {
+    "user1_admin":      "user1",
+    "user1_admin_happ": "user1_happ",
+    "user1_ws":         "user1",
+    "user1_admin_ws":   "user1",
+    "tg_8677536826_ws": "tg_8677536826",
+    "tg_1483599707_ws": "tg_1483599707",
+}
+
+def _merge_aliases(d: dict) -> dict:
+    out = {}
+    for email, vals in d.items():
+        key = EMAIL_ALIASES.get(email, email)
+        if key not in out:
+            out[key] = {"uplink": 0, "downlink": 0}
+        out[key]["uplink"]   += vals.get("uplink", 0)
+        out[key]["downlink"] += vals.get("downlink", 0)
+    return out
+
 def _autosave_stats():
-    import threading
     def loop():
-        import time
         while True:
-            time.sleep(300)  # every 5 minutes
+            time.sleep(300)
             snapshot_stats()
-    t = threading.Thread(target=loop, daemon=True)
-    t.start()
+    threading.Thread(target=loop, daemon=True).start()
+
+# ── system metrics ────────────────────────────────────────────────────────────
+METRICS_IFACE   = "ens1"
+METRICS_MAXLEN  = 720   # 1 час при интервале 5 сек
+METRICS_INTERVAL = 5
+metrics_buf  = collections.deque(maxlen=METRICS_MAXLEN)
+metrics_on   = True   # флаг сбора
+_prev_cpu    = None
+_prev_net    = None
+
+def _read_cpu():
+    with open("/proc/stat") as f:
+        line = f.readline()
+    vals = list(map(int, line.split()[1:]))
+    total = sum(vals)
+    idle  = vals[3] + vals[4]  # idle + iowait
+    return total, idle
+
+def _read_net():
+    with open("/proc/net/dev") as f:
+        for line in f:
+            if METRICS_IFACE + ":" in line:
+                parts = line.split()
+                return int(parts[1]), int(parts[9])  # rx_bytes, tx_bytes
+    return 0, 0
+
+def _read_ram():
+    info = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            k, v = line.split(":", 1)
+            info[k.strip()] = int(v.split()[0])
+    total = info["MemTotal"]
+    avail = info["MemAvailable"]
+    used  = total - avail
+    return round(used / total * 100, 1), used // 1024, total // 1024  # %, MB, MB
+
+def _read_disk():
+    st = os.statvfs("/")
+    total = st.f_blocks * st.f_frsize
+    free  = st.f_bavail * st.f_frsize
+    used  = total - free
+    return round(used / total * 100, 1), used // (1024**3), total // (1024**3)
+
+def _collect_metrics():
+    global _prev_cpu, _prev_net, metrics_on
+    while True:
+        time.sleep(METRICS_INTERVAL)
+        if not metrics_on:
+            continue
+        try:
+            # CPU
+            cur_cpu = _read_cpu()
+            cpu_pct = 0.0
+            if _prev_cpu:
+                d_total = cur_cpu[0] - _prev_cpu[0]
+                d_idle  = cur_cpu[1] - _prev_cpu[1]
+                cpu_pct = round((1 - d_idle / max(d_total, 1)) * 100, 1)
+            _prev_cpu = cur_cpu
+
+            # Net bytes/s
+            cur_net = _read_net()
+            rx_s = tx_s = 0
+            if _prev_net:
+                rx_s = max(0, cur_net[0] - _prev_net[0]) // METRICS_INTERVAL
+                tx_s = max(0, cur_net[1] - _prev_net[1]) // METRICS_INTERVAL
+            _prev_net = cur_net
+
+            ram_pct, ram_used_mb, ram_total_mb = _read_ram()
+            disk_pct, disk_used_gb, disk_total_gb = _read_disk()
+
+            metrics_buf.append({
+                "ts":       int(time.time()),
+                "cpu":      cpu_pct,
+                "ram":      ram_pct,
+                "ram_used": ram_used_mb,
+                "ram_total":ram_total_mb,
+                "rx":       rx_s,
+                "tx":       tx_s,
+                "disk":     disk_pct,
+                "disk_used":disk_used_gb,
+                "disk_total":disk_total_gb,
+            })
+        except Exception:
+            pass
+
+def _start_metrics():
+    # прогреваем prev-значения
+    global _prev_cpu, _prev_net
+    _prev_cpu = _read_cpu()
+    _prev_net = _read_net()
+    threading.Thread(target=_collect_metrics, daemon=True).start()
 
 def fmt(b):
     b = int(b)
@@ -251,9 +366,9 @@ def make_qr_b64(text: str) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 # ── vless / subs ──────────────────────────────────────────────────────────────
-PORT_HAPP = 2053  # fallback port without flow
-PORT_R2   = 8443  # xray2 standalone (Reality+Vision), share keys/users with main
-R2_SNI    = "vk.com"  # whitelisted SNI на 8443 — попытка обхода белых списков (если фильтр по SNI)
+PORT_HAPP = 2053  # fallback Reality без flow
+PORT_R2   = 8443  # xray2 standalone (Reality+Vision), vk.com SNI
+R2_SNI    = "vk.com"
 
 def vless_link(uid=None, flow=True, port=None, name=None, sni=None):
     uid  = uid or UUID
@@ -269,9 +384,24 @@ def vless_link(uid=None, flow=True, port=None, name=None, sni=None):
     label = name or REMARK
     return f"vless://{uid}@{SERVER_IP}:{port}?{p}#{urllib.parse.quote(label)}"
 
+def ws_link(uid=None, name=None):
+    """VLESS+WS+TLS через домен — обход DPI на WiFi."""
+    uid = uid or UUID
+    params = {
+        "security": "tls", "sni": DOMAIN, "fp": "chrome",
+        "type": "ws", "path": "/vless", "encryption": "none",
+    }
+    p = urllib.parse.urlencode(params)
+    label = name or (REMARK + " · WS")
+    return f"vless://{uid}@{DOMAIN}:{PORT_WS}?{p}#{urllib.parse.quote(label)}"
+
 def v2ray_sub(uid=None):
-    # Один сервер: порт 2053 без flow (SNI microsoft) — рабочий
-    return base64.b64encode(vless_link(uid, flow=False, port=PORT_HAPP).encode()).decode()
+    # WS+TLS (WiFi, через домен) + 8443 (vk.com SNI) + 2053 (fallback)
+    link_ws   = ws_link(uid, name=REMARK + " · WiFi")
+    link_8443 = vless_link(uid, flow=False, port=PORT_R2, name=REMARK + " · 8443", sni=R2_SNI)
+    link_2053 = vless_link(uid, flow=False, port=PORT_HAPP, name=REMARK + " · 2053")
+    combined  = link_ws + "\n" + link_8443 + "\n" + link_2053
+    return base64.b64encode(combined.encode()).decode()
 
 RU_DOMAINS = [
     "vk.com","vk.ru","vkontakte.ru","userapi.com","vkuseraudio.net",
@@ -298,15 +428,30 @@ RU_DOMAINS = [
 def clash_yaml(uid=None):
     uid = uid or UUID
     G_INT, G_RU = "🌍 Иностранные сайты", "🇷🇺 Русские сайты"
-    proxy = {
-        "name": REMARK, "type": "vless",
+    # Reality на PORT_HAPP (2053) — тот же порт что и HAPP, 443/4443 режутся провайдером
+    proxy_ws = {
+        "name": REMARK + " · WiFi",
+        "type": "vless",
         "server": SERVER_IP, "port": PORT_HAPP, "uuid": uid,
         "network": "tcp", "tls": True, "udp": True,
+        "packet-encoding": "xudp",
         "reality-opts": {"public-key": PUBLIC_KEY, "short-id": SHORT_ID},
-        "servername": SNI, "client-fingerprint": "firefox",
+        "servername": SNI, "client-fingerprint": "chrome",
+    }
+    # Reality резерв — тот же порт 2053, без flow (inbound его не поддерживает)
+    proxy_reality = {
+        "name": REMARK + " · Reality",
+        "type": "vless",
+        "server": SERVER_IP, "port": PORT_HAPP, "uuid": uid,
+        "network": "tcp", "tls": True, "udp": True,
+        "packet-encoding": "xudp",
+        "reality-opts": {"public-key": PUBLIC_KEY, "short-id": SHORT_ID},
+        "servername": SNI, "client-fingerprint": "chrome",
     }
     rules = (
-        ["IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+        [f"IP-CIDR,{SERVER_IP}/32,DIRECT,no-resolve",
+         f"DOMAIN,{DOMAIN},DIRECT",
+         "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
          "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
          "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
          "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve"]
@@ -314,12 +459,27 @@ def clash_yaml(uid=None):
         + [f"MATCH,{G_INT}"]
     )
     return yaml.dump({
-        "port": 7890, "socks-port": 7891, "allow-lan": True,
+        "mixed-port": 7890, "allow-lan": True,
         "mode": "rule", "log-level": "info",
-        "proxies": [proxy],
+        "external-controller": "127.0.0.1:9090",
+        "dns": {
+            "enable": True,
+            "use-hosts": True,
+            "enhanced-mode": "fake-ip",
+            "fake-ip-range": "198.18.0.1/16",
+            "default-nameserver": ["1.1.1.1", "8.8.8.8"],
+            "nameserver": ["1.1.1.1", "8.8.8.8"],
+            "fake-ip-filter": [
+                "*.lan", "stun.*.*.*", "stun.*.*",
+                "time.windows.com", "time.nist.gov", "time.apple.com",
+                "*.msftconnecttest.com", "*.msftncsi.com",
+                "+.xboxlive.com", "*.ipv6.microsoft.com",
+            ],
+        },
+        "proxies": [proxy_ws, proxy_reality],
         "proxy-groups": [
-            {"name": G_INT, "type": "select", "proxies": [REMARK, "DIRECT"]},
-            {"name": G_RU,  "type": "select", "proxies": ["DIRECT", REMARK]},
+            {"name": G_INT, "type": "select", "proxies": [REMARK + " · WiFi", REMARK + " · Reality", "DIRECT"]},
+            {"name": G_RU,  "type": "select", "proxies": ["DIRECT", REMARK + " · WiFi", REMARK + " · Reality"]},
         ],
         "rules": rules,
     }, allow_unicode=True, default_flow_style=False)
@@ -519,6 +679,7 @@ function loadSystem(){
   fetch('/api/system').then(r=>r.json()).then(d=>{
     const bs=document.getElementById('bot-status');
     const ps=document.getElementById('px-status');
+    const ds=document.getElementById('diplom-status');
     if(bs){
       bs.innerHTML=d.bot
         ? '<span class="st-dot st-on"></span> Работает'
@@ -535,13 +696,60 @@ function loadSystem(){
           : '<span class="st-dot st-off"></span> Недоступен';
       }
     }
+    if(ds){
+      ds.innerHTML=d.diplom
+        ? '<span class="st-dot st-on"></span> Работает'
+        : '<span class="st-dot st-off"></span> Остановлен';
+      document.getElementById('diplom-start').disabled=d.diplom;
+      document.getElementById('diplom-stop').disabled=!d.diplom;
+    }
+    const dbs=document.getElementById('diplom-bot-status');
+    if(dbs){
+      dbs.innerHTML=d.diplom_bot
+        ? '<span class="st-dot st-on"></span> Работает'
+        : '<span class="st-dot st-off"></span> Остановлен';
+      document.getElementById('diplom-bot-start').disabled=d.diplom_bot;
+      document.getElementById('diplom-bot-stop').disabled=!d.diplom_bot;
+    }
+    const ts=document.getElementById('turn-status');
+    if(ts){
+      ts.innerHTML=d.turn
+        ? '<span class="st-dot st-on"></span> Работает'
+        : '<span class="st-dot st-off"></span> Остановлен';
+      document.getElementById('turn-start').disabled=d.turn;
+      document.getElementById('turn-stop').disabled=!d.turn;
+    }
   }).catch(()=>{});
+}
+
+function diplomBotAction(action){
+  const btn=document.getElementById(action==='start'?'diplom-bot-start':'diplom-bot-stop');
+  btn.disabled=true;
+  fetch('/api/diplom-bot/'+action,{method:'POST'})
+    .then(r=>r.json()).then(()=>setTimeout(loadSystem,1000))
+    .catch(()=>setTimeout(loadSystem,1000));
+}
+
+function turnAction(action){
+  const btn=document.getElementById(action==='start'?'turn-start':'turn-stop');
+  btn.disabled=true;
+  fetch('/api/turn/'+action,{method:'POST'})
+    .then(r=>r.json()).then(()=>setTimeout(loadSystem,1000))
+    .catch(()=>setTimeout(loadSystem,1000));
 }
 
 function botAction(action){
   const btn=document.getElementById(action==='start'?'bot-start':'bot-stop');
   btn.disabled=true;
   fetch('/api/bot/'+action,{method:'POST'})
+    .then(r=>r.json()).then(()=>setTimeout(loadSystem,1000))
+    .catch(()=>setTimeout(loadSystem,1000));
+}
+
+function diplomAction(action){
+  const btn=document.getElementById(action==='start'?'diplom-start':'diplom-stop');
+  btn.disabled=true;
+  fetch('/api/diplom/'+action,{method:'POST'})
     .then(r=>r.json()).then(()=>setTimeout(loadSystem,1000))
     .catch(()=>setTimeout(loadSystem,1000));
 }
@@ -562,13 +770,236 @@ function pxShutdown(){
 if(document.getElementById('sys-card')){loadSystem();setInterval(loadSystem,10000);}
 """
 
+# ── landing page ─────────────────────────────────────────────────────────────
+def landing_page() -> str:
+    return f"""<!DOCTYPE html>
+<html lang="ru"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ShockNet VPN</title>
+<style>
+:root{{--bg:#0d0d12;--s:#16161f;--s2:#1e1e2a;--br:rgba(255,255,255,0.07);
+  --p:#a78bfa;--g:#34d399;--t:#e2e8f0;--m:#64748b}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:var(--bg);color:var(--t);font-family:-apple-system,'Segoe UI',sans-serif;min-height:100vh}}
+
+/* hero */
+.hero{{text-align:center;padding:80px 20px 60px;position:relative;overflow:hidden}}
+.hero::before{{content:'';position:absolute;top:-120px;left:50%;transform:translateX(-50%);
+  width:600px;height:600px;border-radius:50%;
+  background:radial-gradient(circle,rgba(124,58,237,.15) 0%,transparent 70%);
+  pointer-events:none}}
+.badge{{display:inline-flex;align-items:center;gap:6px;
+  background:rgba(167,139,250,.08);border:1px solid rgba(167,139,250,.2);
+  border-radius:100px;padding:6px 16px;font-size:.78rem;color:var(--p);margin-bottom:24px}}
+.dot{{width:6px;height:6px;border-radius:50%;background:var(--g);animation:pulse 2s infinite}}
+@keyframes pulse{{0%,100%{{opacity:1}}50%{{opacity:.3}}}}
+h1{{font-size:clamp(2.2rem,6vw,3.5rem);font-weight:800;line-height:1.1;margin-bottom:16px;
+  background:linear-gradient(135deg,#fff 30%,var(--p));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent}}
+.hero-sub{{color:var(--m);font-size:1.05rem;max-width:480px;margin:0 auto 36px;line-height:1.6}}
+.hero-btns{{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}}
+.btn-main{{background:linear-gradient(135deg,#7c3aed,#4f46e5);border:none;border-radius:10px;
+  color:#fff;padding:13px 28px;font-size:.95rem;font-weight:600;cursor:pointer;
+  text-decoration:none;display:inline-block;transition:opacity .15s}}
+.btn-main:hover{{opacity:.85}}
+.btn-ghost{{background:transparent;border:1px solid var(--br);border-radius:10px;
+  color:var(--t);padding:13px 28px;font-size:.95rem;font-weight:600;cursor:pointer;
+  text-decoration:none;display:inline-block;transition:all .15s}}
+.btn-ghost:hover{{border-color:var(--p);color:var(--p)}}
+
+/* stats strip */
+.strip{{display:flex;justify-content:center;gap:0;max-width:560px;margin:0 auto 60px;
+  background:var(--s);border:1px solid var(--br);border-radius:16px;overflow:hidden;flex-wrap:wrap}}
+.si{{padding:20px 32px;text-align:center;border-right:1px solid var(--br);flex:1;min-width:120px}}
+.si:last-child{{border-right:none}}
+.sv{{font-size:1.4rem;font-weight:700;color:var(--p);font-family:monospace}}
+.sl{{font-size:.72rem;color:var(--m);text-transform:uppercase;letter-spacing:.06em;margin-top:4px}}
+
+/* steps */
+.section{{max-width:720px;margin:0 auto;padding:0 20px 60px}}
+.section-title{{font-size:1.5rem;font-weight:700;margin-bottom:8px}}
+.section-sub{{color:var(--m);font-size:.9rem;margin-bottom:28px}}
+.steps{{display:flex;flex-direction:column;gap:12px}}
+.step{{background:var(--s);border:1px solid var(--br);border-radius:14px;
+  padding:20px 22px;display:flex;gap:16px;align-items:flex-start}}
+.step:hover{{border-color:rgba(167,139,250,.25)}}
+.step-num{{width:36px;height:36px;border-radius:10px;flex-shrink:0;
+  background:linear-gradient(135deg,rgba(124,58,237,.3),rgba(79,70,229,.2));
+  border:1px solid rgba(124,58,237,.35);display:flex;align-items:center;
+  justify-content:center;font-weight:800;font-size:.9rem;color:var(--p)}}
+.step-body{{flex:1}}
+.step-title{{font-weight:600;font-size:.95rem;margin-bottom:4px}}
+.step-desc{{color:var(--m);font-size:.83rem;line-height:1.5}}
+.step-desc a{{color:var(--p);text-decoration:none}}
+.step-desc a:hover{{text-decoration:underline}}
+
+/* apps */
+.apps{{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:60px}}
+.app-card{{background:var(--s);border:1px solid var(--br);border-radius:14px;padding:20px;
+  text-align:center;text-decoration:none;color:var(--t);transition:all .15s;display:block}}
+.app-card:hover{{border-color:rgba(167,139,250,.3);transform:translateY(-2px)}}
+.app-icon{{font-size:2.2rem;margin-bottom:10px}}
+.app-name{{font-weight:700;font-size:.95rem;margin-bottom:4px}}
+.app-desc{{font-size:.75rem;color:var(--m)}}
+
+/* faq */
+.faq{{display:flex;flex-direction:column;gap:10px}}
+.faq-item{{background:var(--s);border:1px solid var(--br);border-radius:12px;overflow:hidden}}
+.faq-q{{padding:16px 20px;font-weight:600;font-size:.9rem;cursor:pointer;
+  display:flex;justify-content:space-between;align-items:center;user-select:none}}
+.faq-q:hover{{color:var(--p)}}
+.faq-arrow{{color:var(--m);transition:transform .2s;font-size:.8rem}}
+.faq-a{{color:var(--m);font-size:.85rem;line-height:1.6;padding:0 20px 16px;display:none}}
+.faq-item.open .faq-arrow{{transform:rotate(180deg)}}
+.faq-item.open .faq-a{{display:block}}
+
+/* tg block */
+.tg-block{{background:linear-gradient(135deg,rgba(124,58,237,.1),rgba(79,70,229,.05));
+  border:1px solid rgba(124,58,237,.2);border-radius:16px;padding:32px;
+  text-align:center;margin-bottom:60px}}
+.tg-block h3{{font-size:1.2rem;font-weight:700;margin-bottom:8px}}
+.tg-block p{{color:var(--m);font-size:.88rem;margin-bottom:20px}}
+.tg-btn{{display:inline-flex;align-items:center;gap:8px;
+  background:linear-gradient(135deg,#2AABEE,#229ED9);
+  border:none;border-radius:10px;color:#fff;padding:12px 24px;
+  font-size:.92rem;font-weight:600;text-decoration:none;transition:opacity .15s}}
+.tg-btn:hover{{opacity:.85}}
+
+footer{{border-top:1px solid var(--br);padding:24px 20px;text-align:center;
+  color:var(--m);font-size:.78rem}}
+@media(max-width:480px){{.si{{padding:16px 20px}}.btn-main,.btn-ghost{{width:100%;text-align:center}}
+  .hero-btns{{flex-direction:column;align-items:center}}}}
+</style></head>
+<body>
+
+<div class="hero">
+  <div class="badge"><span class="dot"></span> Сервер работает</div>
+  <h1>ShockNet VPN</h1>
+  <p class="hero-sub">Быстрый и надёжный VPN без ограничений.<br>Работает на любом WiFi и мобильном интернете.</p>
+  <div class="hero-btns">
+    <a href="https://t.me/myvpngift_bot" class="btn-main">📱 Получить доступ</a>
+    <a href="#how" class="btn-ghost">Как подключиться?</a>
+  </div>
+</div>
+
+<div style="max-width:560px;margin:0 auto 60px;padding:0 20px">
+  <div class="strip">
+    <div class="si"><div class="sv">VLESS</div><div class="sl">Протокол</div></div>
+    <div class="si"><div class="sv">3 ТБ</div><div class="sl">В месяц</div></div>
+    <div class="si"><div class="sv">443</div><div class="sl">Порт</div></div>
+  </div>
+</div>
+
+<div class="section" id="how">
+  <div class="section-title">Как подключиться</div>
+  <div class="section-sub">Три шага и ты внутри</div>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <div class="step-body">
+        <div class="step-title">Запроси доступ в боте</div>
+        <div class="step-desc">Напиши <a href="https://t.me/myvpngift_bot">@myvpngift_bot</a> команду /start и нажми кнопку запроса доступа. Администратор одобрит в течение нескольких минут.</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <div class="step-body">
+        <div class="step-title">Открой личную страницу</div>
+        <div class="step-desc">После одобрения бот пришлёт ссылку на твою личную страницу с ключами, QR-кодами и инструкциями.</div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <div class="step-body">
+        <div class="step-title">Скачай приложение и подключись</div>
+        <div class="step-desc">Используй HAPP (Android/iOS) или Koala Clash (Windows/macOS). Отсканируй QR или вставь ссылку подписки — всё настроится автоматически.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Приложения</div>
+  <div class="section-sub">Выбери под своё устройство</div>
+  <div class="apps">
+    <a href="#" class="app-card">
+      <div class="app-icon">🤖</div>
+      <div class="app-name">HAPP</div>
+      <div class="app-desc">Android</div>
+    </a>
+    <a href="#" class="app-card">
+      <div class="app-icon">🍎</div>
+      <div class="app-name">HAPP</div>
+      <div class="app-desc">iOS / iPhone</div>
+    </a>
+    <a href="#" class="app-card">
+      <div class="app-icon">🪟</div>
+      <div class="app-name">Koala Clash</div>
+      <div class="app-desc">Windows</div>
+    </a>
+    <a href="#" class="app-card">
+      <div class="app-icon">🍏</div>
+      <div class="app-name">Koala Clash</div>
+      <div class="app-desc">macOS</div>
+    </a>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">Вопросы и ответы</div>
+  <div class="section-sub">Часто спрашивают</div>
+  <div class="faq">
+    <div class="faq-item">
+      <div class="faq-q" onclick="toggle(this)">Не работает на домашнем WiFi <span class="faq-arrow">▾</span></div>
+      <div class="faq-a">Некоторые роутеры блокируют VPN трафик. В подписке есть профиль <b>WiFi</b> — он работает через домен и обходит такие блокировки. В HAPP выбери профиль с пометкой "WiFi".</div>
+    </div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="toggle(this)">Не работает на рабочем компьютере <span class="faq-arrow">▾</span></div>
+      <div class="faq-a">Корпоративные сети с Squid-прокси блокируют весь внешний трафик — это политика компании и обойти её штатными средствами не получится. Используй мобильный интернет или личный компьютер.</div>
+    </div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="toggle(this)">Как обновить конфигурацию? <span class="faq-arrow">▾</span></div>
+      <div class="faq-a">В HAPP и Koala Clash нажми "Обновить подписку". Конфиг подтянется автоматически с актуальными настройками.</div>
+    </div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="toggle(this)">Сколько устройств можно подключить? <span class="faq-arrow">▾</span></div>
+      <div class="faq-a">Ограничений по количеству устройств нет. Одна ссылка подписки — все твои устройства.</div>
+    </div>
+    <div class="faq-item">
+      <div class="faq-q" onclick="toggle(this)">Что делать если бот не отвечает? <span class="faq-arrow">▾</span></div>
+      <div class="faq-a">Напиши /start ещё раз. Если не помогает — свяжись с администратором напрямую в Telegram.</div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="tg-block">
+    <h3>Готов подключиться?</h3>
+    <p>Запроси доступ через Telegram бот — это займёт меньше минуты</p>
+    <a href="https://t.me/myvpngift_bot" class="tg-btn">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="white"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.562 8.248l-2.012 9.482c-.145.658-.537.818-1.084.508l-3-2.21-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.12L7.48 14.617l-2.95-.924c-.64-.203-.654-.64.136-.948l11.532-4.448c.533-.194 1 .13.826.95h-.001l-.462.001z"/></svg>
+      Написать боту
+    </a>
+  </div>
+</div>
+
+<footer>ShockNet VPN · {DOMAIN} · Все права защищены</footer>
+
+<script>
+function toggle(el){{
+  const item=el.parentElement;
+  item.classList.toggle('open');
+}}
+</script>
+</body></html>"""
+
 # ── user personal page ────────────────────────────────────────────────────────
 def user_page(user: dict) -> str:
     token = user["token"]
     uid   = user["uuid"]
     email = user["email"]
     label = user["label"]
-    sub_url = f"http://{SERVER_IP}/sub/{token}"
+    sub_url = f"https://{DOMAIN}/sub/{token}"
     return f"""<!DOCTYPE html>
 <html lang="ru"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -608,9 +1039,9 @@ def user_page(user: dict) -> str:
       </div>
       <hr class="divider">
       <div>
-        <div class="flabel">VLESS ссылка (ручная, порт 2053)</div>
+        <div class="flabel">VLESS+WS ссылка (ручная, WiFi)</div>
         <div class="crow" id="r-vless-happ">
-          <span class="cv">{vless_link(uid, flow=False, port=PORT_HAPP)}</span>
+          <span class="cv">{ws_link(uid)}</span>
           <button class="cb" onclick="copy('r-vless-happ',null,this)">Копировать</button>
         </div>
       </div>
@@ -640,15 +1071,15 @@ def user_page(user: dict) -> str:
       <div>
         <div class="flabel">Ссылка подписки (Clash YAML)</div>
         <div class="crow" id="r-clash">
-          <span class="cv">http://{SERVER_IP}/sub/clash/{token}</span>
-          <button class="cb" onclick="copy('r-clash','http://{SERVER_IP}/sub/clash/{token}',this)">Копировать</button>
+          <span class="cv">https://{DOMAIN}/sub/clash/{token}</span>
+          <button class="cb" onclick="copy('r-clash','https://{DOMAIN}/sub/clash/{token}',this)">Копировать</button>
         </div>
       </div>
       <hr class="divider">
       <div>
-        <div class="flabel">VLESS ссылка (ручная, порт 443)</div>
+        <div class="flabel">VLESS+WS ссылка (ручная, WiFi)</div>
         <div class="crow" id="r-vless-clash">
-          <span class="cv">{vless_link(uid, flow=True, port=PORT_VLESS)}</span>
+          <span class="cv">{ws_link(uid)}</span>
           <button class="cb" onclick="copy('r-vless-clash',null,this)">Копировать</button>
         </div>
       </div>
@@ -660,6 +1091,7 @@ def user_page(user: dict) -> str:
       <a class="dlbtn" href="{DL_CLASH['linux']}" target="_blank">🐧 Linux</a>
     </div>
   </div>
+
 </div>
 <script>{JS}
 // Override loadStats for user page — use public endpoint
@@ -727,6 +1159,38 @@ def admin_page() -> str:
     <div class="si2"><div class="sl2">Порт</div><div class="sv2">{PORT_VLESS}</div></div>
   </div>
 
+  <!-- Monitoring -->
+  <div class="card" id="mon-card">
+    <div class="card-head">
+      <div class="icon icon-stat">📈</div>
+      <div style="flex:1"><div class="card-title">Мониторинг сервера</div>
+        <div class="card-sub" id="mon-range">За последний час · каждые 5 сек</div></div>
+      <button id="mon-toggle" class="sys-btn sys-btn-off" onclick="toggleMetrics()" style="flex-shrink:0">■ Пауза</button>
+    </div>
+
+    <!-- Current values -->
+    <div style="display:flex;flex-wrap:wrap;border-bottom:1px solid var(--br)">
+      <div class="si2" style="min-width:90px"><div class="sl2">CPU</div><div class="sv2" id="m-cpu">—</div></div>
+      <div class="si2" style="min-width:90px"><div class="sl2">RAM</div><div class="sv2" id="m-ram">—</div></div>
+      <div class="si2" style="min-width:90px"><div class="sl2">Диск</div><div class="sv2" id="m-disk">—</div></div>
+      <div class="si2" style="min-width:110px"><div class="sl2">↓ Входящий</div><div class="sv2" id="m-rx" style="color:#34d399">—</div></div>
+      <div class="si2" style="min-width:110px"><div class="sl2">↑ Исходящий</div><div class="sv2" id="m-tx" style="color:#60a5fa">—</div></div>
+    </div>
+
+    <!-- Charts -->
+    <div style="padding:16px 20px;display:flex;flex-direction:column;gap:20px">
+      <div>
+        <div class="flabel" style="margin-bottom:8px">CPU % / RAM %</div>
+        <canvas id="chart-cpu" height="80"></canvas>
+      </div>
+      <div>
+        <div class="flabel" style="margin-bottom:8px">Сеть (байт/с)</div>
+        <canvas id="chart-net" height="80"></canvas>
+      </div>
+    </div>
+    <div class="refresh-area"><span id="mon-upd">—</span></div>
+  </div>
+
   <!-- System controls -->
   <div class="card" id="sys-card">
     <div class="card-head">
@@ -764,6 +1228,83 @@ def admin_page() -> str:
     </div>
   </div>
 
+  <!-- VK TURN -->
+  <div class="card" id="turn-card">
+    <div class="card-head">
+      <div class="icon" style="background:linear-gradient(135deg,#0284c7,#0ea5e9)">🔀</div>
+      <div><div class="card-title">VK TURN</div>
+        <div class="card-sub">Relay для обхода белых списков · WireGuard</div></div>
+    </div>
+    <div class="card-body" style="gap:14px">
+      <div class="sys-row">
+        <div class="sys-info">
+          <div class="sys-name">🔀 turnproxy</div>
+          <div class="sys-status" id="turn-status"><span class="st-dot st-unknown"></span> Загрузка...</div>
+        </div>
+        <div class="sys-btns">
+          <button class="sys-btn sys-btn-on"  id="turn-start" onclick="turnAction('start')">▶ Вкл</button>
+          <button class="sys-btn sys-btn-off" id="turn-stop"  onclick="turnAction('stop')">■ Выкл</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Диплом -->
+  <div class="card" id="diplom-card">
+    <div class="card-head">
+      <div class="icon" style="background:linear-gradient(135deg,#6366f1,#8b5cf6)">🎓</div>
+      <div><div class="card-title">Диплом</div>
+        <div class="card-sub">shocknet.ru · Django сайт</div></div>
+    </div>
+    <div class="card-body" style="gap:14px">
+
+      <!-- Django сайт -->
+      <div class="sys-row">
+        <div class="sys-info">
+          <div class="sys-name">🌐 Django сайт</div>
+          <div class="sys-status" id="diplom-status"><span class="st-dot st-unknown"></span> Загрузка...</div>
+        </div>
+        <div class="sys-btns">
+          <button class="sys-btn sys-btn-on"  id="diplom-start" onclick="diplomAction('start')">▶ Вкл</button>
+          <button class="sys-btn sys-btn-off" id="diplom-stop"  onclick="diplomAction('stop')">■ Выкл</button>
+        </div>
+      </div>
+
+      <hr class="divider">
+
+      <!-- VK бот -->
+      <div class="sys-row">
+        <div class="sys-info">
+          <div class="sys-name">🤖 VK Бот</div>
+          <div class="sys-status" id="diplom-bot-status"><span class="st-dot st-unknown"></span> Загрузка...</div>
+        </div>
+        <div class="sys-btns">
+          <button class="sys-btn sys-btn-on"  id="diplom-bot-start" onclick="diplomBotAction('start')">▶ Вкл</button>
+          <button class="sys-btn sys-btn-off" id="diplom-bot-stop"  onclick="diplomBotAction('stop')">■ Выкл</button>
+        </div>
+      </div>
+
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px;padding:16px 20px;border-top:1px solid var(--br)">
+      <a href="https://shocknet.ru" target="_blank" class="pxbtn">
+        <span style="font-size:1.6rem">🌐</span>
+        <div class="pxtxt">
+          <span class="pxname" style="color:#a78bfa">Главная страница</span>
+          <span class="pxsub">Открыть сайт диплома →</span>
+        </div>
+        <div class="pxport" style="color:#a78bfa;background:rgba(167,139,250,.13);border-color:rgba(167,139,250,.25)">shocknet.ru</div>
+      </a>
+      <a href="https://shocknet.ru/crm/" target="_blank" class="pxbtn">
+        <span style="font-size:1.6rem">📋</span>
+        <div class="pxtxt">
+          <span class="pxname" style="color:#a78bfa">CRM система</span>
+          <span class="pxsub">Открыть CRM панель →</span>
+        </div>
+        <div class="pxport" style="color:#a78bfa;background:rgba(167,139,250,.13);border-color:rgba(167,139,250,.25)">/crm</div>
+      </a>
+    </div>
+  </div>
+
   <div class="card">
     <div class="card-head">
       <div class="icon icon-stat">📊</div>
@@ -786,15 +1327,15 @@ def admin_page() -> str:
       <div>
         <div class="flabel">Clash YAML</div>
         <div class="crow" id="r-clash">
-          <span class="cv">http://{SERVER_IP}/sub/clash/user1</span>
-          <button class="cb" onclick="copy('r-clash','http://{SERVER_IP}/sub/clash/user1',this)">Копировать</button>
+          <span class="cv">https://{DOMAIN}/sub/clash/user1</span>
+          <button class="cb" onclick="copy('r-clash','https://{DOMAIN}/sub/clash/user1',this)">Копировать</button>
         </div>
       </div>
       <hr class="divider">
       <div>
-        <div class="flabel">VLESS ссылка</div>
+        <div class="flabel">VLESS+WS ссылка (WiFi)</div>
         <div class="crow" id="r-vless">
-          <span class="cv">{vless_link()}</span>
+          <span class="cv">{ws_link()}</span>
           <button class="cb" onclick="copy('r-vless',null,this)">Копировать</button>
         </div>
       </div>
@@ -817,8 +1358,8 @@ def admin_page() -> str:
       <div>
         <div class="flabel">Ссылка подписки</div>
         <div class="crow" id="r-happ">
-          <span class="cv">http://{SERVER_IP}/sub/user1</span>
-          <button class="cb" onclick="copy('r-happ','http://{SERVER_IP}/sub/user1',this)">Копировать</button>
+          <span class="cv">https://{DOMAIN}/sub/user1</span>
+          <button class="cb" onclick="copy('r-happ','https://{DOMAIN}/sub/user1',this)">Копировать</button>
         </div>
       </div>
     </div>
@@ -842,13 +1383,101 @@ def admin_page() -> str:
     <div class="pxport">:8006</div>
   </a>
 </div>
-<script>{JS}</script></body></html>"""
+<script>{JS}</script>
+<script src="/static/chart.min.js"></script>
+<script>
+(function(){{
+  const C = Chart.defaults;
+  C.color = '#64748b';
+  C.borderColor = 'rgba(255,255,255,0.05)';
+
+  function fmtBytes(b){{
+    if(b<1024) return b+' Б/с';
+    if(b<1048576) return (b/1024).toFixed(1)+' КБ/с';
+    return (b/1048576).toFixed(2)+' МБ/с';
+  }}
+  function fmtTime(ts){{
+    const d=new Date(ts*1000);
+    return d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0')+':'+d.getSeconds().toString().padStart(2,'0');
+  }}
+
+  const cpuChart = new Chart(document.getElementById('chart-cpu'),{{
+    type:'line',
+    data:{{labels:[],datasets:[
+      {{label:'CPU %',data:[],borderColor:'#a78bfa',backgroundColor:'rgba(167,139,250,.1)',
+        fill:true,tension:.3,pointRadius:0,borderWidth:1.5}},
+      {{label:'RAM %',data:[],borderColor:'#60a5fa',backgroundColor:'rgba(96,165,250,.08)',
+        fill:true,tension:.3,pointRadius:0,borderWidth:1.5}},
+    ]}},
+    options:{{animation:false,plugins:{{legend:{{labels:{{boxWidth:12,font:{{size:11}}}}}}}},
+      scales:{{x:{{ticks:{{maxTicksLimit:6,font:{{size:10}}}},grid:{{color:'rgba(255,255,255,0.04)'}}}},
+               y:{{min:0,max:100,ticks:{{callback:v=>v+'%',font:{{size:10}}}},
+                   grid:{{color:'rgba(255,255,255,0.04)'}}}}}}}},
+  }});
+
+  const netChart = new Chart(document.getElementById('chart-net'),{{
+    type:'line',
+    data:{{labels:[],datasets:[
+      {{label:'↓ Вход',data:[],borderColor:'#34d399',backgroundColor:'rgba(52,211,153,.08)',
+        fill:true,tension:.3,pointRadius:0,borderWidth:1.5}},
+      {{label:'↑ Выход',data:[],borderColor:'#60a5fa',backgroundColor:'rgba(96,165,250,.06)',
+        fill:true,tension:.3,pointRadius:0,borderWidth:1.5}},
+    ]}},
+    options:{{animation:false,plugins:{{legend:{{labels:{{boxWidth:12,font:{{size:11}}}}}}}},
+      scales:{{x:{{ticks:{{maxTicksLimit:6,font:{{size:10}}}},grid:{{color:'rgba(255,255,255,0.04)'}}}},
+               y:{{min:0,ticks:{{callback:fmtBytes,font:{{size:10}}}},
+                   grid:{{color:'rgba(255,255,255,0.04)'}}}}}}}},
+  }});
+
+  function loadMetrics(){{
+    fetch('/api/metrics').then(r=>r.json()).then(d=>{{
+      const pts=d.points;
+      if(!pts||!pts.length) return;
+      const labels=pts.map(p=>fmtTime(p.ts));
+      cpuChart.data.labels=labels;
+      cpuChart.data.datasets[0].data=pts.map(p=>p.cpu);
+      cpuChart.data.datasets[1].data=pts.map(p=>p.ram);
+      cpuChart.update('none');
+      netChart.data.labels=labels;
+      netChart.data.datasets[0].data=pts.map(p=>p.rx);
+      netChart.data.datasets[1].data=pts.map(p=>p.tx);
+      netChart.update('none');
+      // current values
+      const last=pts[pts.length-1];
+      document.getElementById('m-cpu').textContent=last.cpu+'%';
+      document.getElementById('m-ram').textContent=last.ram+'% ('+last.ram_used+'/'+last.ram_total+' МБ)';
+      document.getElementById('m-disk').textContent=last.disk+'% ('+last.disk_used+'/'+last.disk_total+' ГБ)';
+      document.getElementById('m-rx').textContent=fmtBytes(last.rx);
+      document.getElementById('m-tx').textContent=fmtBytes(last.tx);
+      // toggle btn
+      const btn=document.getElementById('mon-toggle');
+      if(d.collecting){{btn.textContent='■ Пауза';btn.className='sys-btn sys-btn-off';}}
+      else{{btn.textContent='▶ Запись';btn.className='sys-btn sys-btn-on';}}
+      document.getElementById('mon-upd').textContent='Обновлено: '+new Date().toLocaleTimeString('ru-RU')+' · '+pts.length+' точек';
+    }}).catch(()=>{{}});
+  }}
+
+  function toggleMetrics(){{
+    fetch('/api/metrics/toggle',{{method:'POST'}}).then(r=>r.json()).then(loadMetrics);
+  }}
+  window.toggleMetrics=toggleMetrics;
+
+  if(document.getElementById('mon-card')){{
+    loadMetrics();
+    setInterval(loadMetrics,5000);
+  }}
+}})();
+</script>
+</body></html>"""
 
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 def get_system_status() -> dict:
     # Bot
     bot = subprocess.run(["systemctl", "is-active", "vpnbot"],
                          capture_output=True, text=True).stdout.strip()
+    # Diplom
+    diplom = subprocess.run(["systemctl", "is-active", "diplom"],
+                            capture_output=True, text=True).stdout.strip()
     # Proxmox — TCP check on port 8006
     px_up = False
     if PROXMOX_HOST:
@@ -858,7 +1487,28 @@ def get_system_status() -> dict:
             s.close(); px_up = True
         except Exception:
             px_up = False
-    return {"bot": bot == "active", "proxmox": px_up, "proxmox_host": PROXMOX_HOST}
+    diplom_bot = subprocess.run(["systemctl", "is-active", "diplom-bot"],
+                                capture_output=True, text=True).stdout.strip()
+    turn = subprocess.run(["systemctl", "is-active", "turnproxy"],
+                          capture_output=True, text=True).stdout.strip()
+    return {"bot": bot == "active", "diplom": diplom == "active",
+            "diplom_bot": diplom_bot == "active", "turn": turn == "active",
+            "proxmox": px_up, "proxmox_host": PROXMOX_HOST}
+
+def diplom_control(action: str) -> bool:
+    cmd = "start" if action == "start" else "stop"
+    r = subprocess.run(["systemctl", cmd, "diplom"], capture_output=True)
+    return r.returncode == 0
+
+def diplom_bot_control(action: str) -> bool:
+    cmd = "start" if action == "start" else "stop"
+    r = subprocess.run(["systemctl", cmd, "diplom-bot"], capture_output=True)
+    return r.returncode == 0
+
+def turn_control(action: str) -> bool:
+    cmd = "start" if action == "start" else "stop"
+    r = subprocess.run(["systemctl", cmd, "turnproxy"], capture_output=True)
+    return r.returncode == 0
 
 def bot_control(action: str) -> bool:
     cmd = "start" if action == "start" else "stop"
@@ -913,14 +1563,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def sub_response(self, data: bytes, ul: int, dl: int, token: str = "",
                      content_type: str = "text/plain", filename: str = "myvpn"):
-        page_url = f"http://{SERVER_IP}/sub/{token}" if token else f"http://{SERVER_IP}"
+        page_url = f"https://{DOMAIN}/sub/{token}" if token else f"https://{DOMAIN}"
         title_b64 = base64.b64encode(REMARK.encode()).decode()
         self.send_response(200)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("subscription-userinfo",
-                         f"upload={ul}; download={dl}; total={TOTAL_LIMIT}")
+                         f"upload=0; download={ul+dl}; total={TOTAL_LIMIT}")
         self.send_header("profile-title",         f"base64:{title_b64}")
         self.send_header("profile-web-page-url",  page_url)
         self.send_header("profile-update-interval", "24")
@@ -933,15 +1583,46 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         ua   = self.headers.get("User-Agent", "")
 
+        # ── static assets ──
+        if path == "/static/chart.min.js":
+            try:
+                data = open("/opt/subserver/chartjs.min.js", "rb").read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/javascript")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                self.wfile.write(data)
+            except Exception:
+                self.send_response(404); self.end_headers()
+            return
+
         # ── login page ──
         if path == "/login":
-            self.html(LOGIN_HTML.replace("WRONG_MSG", ""))
+            self.html(LOGIN_HTML.replace("ERRCLASS", "").replace("ERRMSG", ""))
+            return
+
+        # ── telegram auth callback ──
+        if path == "/tg-auth":
+            qs = urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+            data = {k: v[0] for k, v in qs.items()}
+            db = load_db()
+            tg_id = int(data.get("id", 0))
+            if verify_telegram_auth(data) and tg_id == db.get("admin_id", 0):
+                self.send_response(302)
+                self.send_header("Location", "/admin")
+                self.send_header("Set-Cookie",
+                    f"session={SESSION_TOKEN}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000")
+                self.end_headers()
+            else:
+                self.html(LOGIN_HTML
+                    .replace("ERRCLASS", "show")
+                    .replace("ERRMSG", "Доступ запрещён"))
             return
 
         # ── logout ──
         if path == "/logout":
             self.send_response(302)
-            self.send_header("Location", "/login")
+            self.send_header("Location", "/admin")
             self.send_header("Set-Cookie", "session=; Max-Age=0; Path=/")
             self.end_headers()
             return
@@ -956,13 +1637,12 @@ class Handler(BaseHTTPRequestHandler):
             all_ul = sum(v.get("uplink", 0)   for v in raw.values())
             all_dl = sum(v.get("downlink", 0) for v in raw.values())
             email = user["email"]
-            s1 = raw.get(email, {})
-            s2 = raw.get(email + "_happ", {})
+            ul, dl = user_traffic(raw, email)
             resp = json.dumps({
-                "uplink":        s1.get("uplink", 0)   + s2.get("uplink", 0),
-                "downlink":      s1.get("downlink", 0) + s2.get("downlink", 0),
-                "total_server":  all_ul + all_dl,
-                "limit":         TOTAL_LIMIT,
+                "uplink":       ul,
+                "downlink":     dl,
+                "total_server": all_ul + all_dl,
+                "limit":        TOTAL_LIMIT,
             }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -970,10 +1650,26 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(resp)
             return
 
+        # ── landing page (public) ──
+        if path in ("/", "/index.html"):
+            self.html(landing_page())
+            return
+
         # ── admin pages (require auth) ──
-        if path in ("/", "/index.html") or path.startswith("/api/"):
+        if path in ("/admin", "/admin/") or path.startswith("/api/"):
             if not is_authenticated(self.cookies()):
                 self.redirect("/login")
+                return
+
+            if path == "/api/metrics":
+                resp = json.dumps({
+                    "points": list(metrics_buf),
+                    "collecting": metrics_on,
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(resp)
                 return
 
             if path == "/api/system":
@@ -988,13 +1684,13 @@ class Handler(BaseHTTPRequestHandler):
                 raw = get_stats()
                 users_out = []
                 for u in all_users_for_stats():
-                    s = raw.get(u["email"], {})
+                    ul, dl = user_traffic(raw, u["email"])
                     users_out.append({
                         "email":    u["email"],
                         "label":    u["label"],
                         "approved": u.get("approved", True),
-                        "uplink":   s.get("uplink", 0),
-                        "downlink": s.get("downlink", 0),
+                        "uplink":   ul,
+                        "downlink": dl,
                     })
                 resp = json.dumps({"users": users_out}).encode()
                 self.send_response(200)
@@ -1015,10 +1711,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(404); self.end_headers(); return
             email = user.get("email", "myvpn")
             stats = get_stats()
-            all_ul = sum(v.get("uplink", 0)   for v in stats.values())
-            all_dl = sum(v.get("downlink", 0) for v in stats.values())
+            ul, dl = user_traffic(stats, email)
             data = clash_yaml(user["uuid"]).encode()
-            self.sub_response(data, all_ul, all_dl,
+            self.sub_response(data, ul, dl,
                               token, content_type="text/yaml", filename=email)
             return
 
@@ -1034,10 +1729,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.html(user_page(user))
             else:
                 stats = get_stats()
-                all_ul = sum(v.get("uplink", 0)   for v in stats.values())
-                all_dl = sum(v.get("downlink", 0) for v in stats.values())
+                ul, dl = user_traffic(stats, email)
                 data = v2ray_sub(user["uuid"]).encode()
-                self.sub_response(data, all_ul, all_dl, token, filename=email)
+                self.sub_response(data, ul, dl, token, filename=email)
             return
 
         self.send_response(404); self.end_headers()
@@ -1057,33 +1751,53 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
             self.wfile.write(json.dumps({"ok": ok}).encode()); return
 
+        if self.path == "/api/diplom/start":
+            ok = diplom_control("start")
+            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"ok": ok}).encode()); return
+
+        if self.path == "/api/diplom/stop":
+            ok = diplom_control("stop")
+            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"ok": ok}).encode()); return
+
+        if self.path == "/api/metrics/toggle":
+            global metrics_on
+            metrics_on = not metrics_on
+            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"collecting": metrics_on}).encode()); return
+
+        if self.path == "/api/turn/start":
+            ok = turn_control("start")
+            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"ok": ok}).encode()); return
+
+        if self.path == "/api/turn/stop":
+            ok = turn_control("stop")
+            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"ok": ok}).encode()); return
+
+        if self.path == "/api/diplom-bot/start":
+            ok = diplom_bot_control("start")
+            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"ok": ok}).encode()); return
+
+        if self.path == "/api/diplom-bot/stop":
+            ok = diplom_bot_control("stop")
+            self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
+            self.wfile.write(json.dumps({"ok": ok}).encode()); return
+
         if self.path == "/api/proxmox/shutdown":
             result = proxmox_shutdown()
             self.send_response(200); self.send_header("Content-Type","application/json"); self.end_headers()
             self.wfile.write(json.dumps({"result": result}).encode()); return
 
-        if self.path == "/login":
-            length = int(self.headers.get("Content-Length", 0))
-            body   = self.rfile.read(length).decode()
-            params = dict(p.split("=", 1) for p in body.split("&") if "=" in p)
-            pwd    = urllib.parse.unquote_plus(params.get("password", ""))
-            if pwd == ADMIN_PASSWORD:
-                self.send_response(302)
-                self.send_header("Location", "/")
-                self.send_header("Set-Cookie",
-                    f"session={SESSION_TOKEN}; Path=/; HttpOnly; SameSite=Strict")
-                self.end_headers()
-            else:
-                self.html(LOGIN_HTML.replace(
-                    'class="err" id="err"',
-                    'class="err show" id="err"'
-                ).replace("WRONG_MSG", "Неверный пароль"), 401)
-            return
         self.send_response(405); self.end_headers()
 
 
 if __name__ == "__main__":
     _autosave_stats()
+    _start_metrics()
     server = HTTPServer(("0.0.0.0", WEB_PORT), Handler)
     print(f"Running on :{WEB_PORT}")
     server.serve_forever()
