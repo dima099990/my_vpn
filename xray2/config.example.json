@@ -1,0 +1,114 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "vless-reality-8443",
+      "listen": "0.0.0.0",
+      "port": 8443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "0bda67c1-3073-4aed-876b-c7301efe7e0c",
+            "email": "user1_8443",
+            "flow": "xtls-rprx-vision"
+          },
+          {
+            "id": "b54d7e54-7248-4d2e-919e-7da71a91e0f0",
+            "email": "user1_admin_8443",
+            "flow": "xtls-rprx-vision"
+          },
+          {
+            "id": "39b7e922-4281-4d0a-b63e-02e598b95863",
+            "email": "tg_8677536826_8443",
+            "flow": "xtls-rprx-vision"
+          },
+          {
+            "id": "0bda67c1-3073-4aed-876b-c7301efe7e0c",
+            "email": "user1_happ_8443"
+          },
+          {
+            "id": "b54d7e54-7248-4d2e-919e-7da71a91e0f0",
+            "email": "user1_admin_happ_8443"
+          },
+          {
+            "id": "39b7e922-4281-4d0a-b63e-02e598b95863",
+            "email": "tg_8677536826_happ_8443"
+          },
+          {
+            "id": "bccffd1a-e93a-4312-a491-52f378ace0e5",
+            "email": "tg_1483599707_happ_8443"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "vk.com:443",
+          "xver": 0,
+          "serverNames": [
+            "vk.com",
+            "www.vk.com",
+            "login.vk.com"
+          ],
+          "privateKey": "YOUR_PRIVATE_KEY",
+          "shortIds": [
+            "d4d93c76246769b6"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      }
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "protocol": [
+          "bittorrent"
+        ],
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "ip": [
+          "0.0.0.0/8",
+          "10.0.0.0/8",
+          "127.0.0.0/8",
+          "169.254.0.0/16",
+          "172.16.0.0/12",
+          "192.168.0.0/16",
+          "::1/128",
+          "fc00::/7",
+          "fe80::/10"
+        ],
+        "outboundTag": "block"
+      }
+    ]
+  }
+}
