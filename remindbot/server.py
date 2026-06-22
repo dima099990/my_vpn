@@ -16,8 +16,16 @@ WEB_PORT = 5050
 PREFIX = "/remind"
 USERS_FILE = Path("/opt/remindbot/users.json")
 REMINDERS_FILE = Path("/opt/remindbot/reminders.json")
+VPN_USERS_FILE = Path("/opt/vpnbot/users.json")
+ADMIN_TG_ID = 652872261  # Dmitry_Shock
 
-# ── auth ──────────────────────────────────────────────────────────────────────
+# ── auth (shared with VPN admin) ─────────────────────────────────────────────
+def make_vpn_admin_token() -> str:
+    """Same token as VPN subserver for admin."""
+    return hmac.new(SESSION_SECRET.encode(), b"admin", hashlib.sha256).hexdigest()
+
+VPN_ADMIN_TOKEN = make_vpn_admin_token()
+
 def make_session_token(tg_id: int) -> str:
     return hmac.new(SESSION_SECRET.encode(), f"remind:{tg_id}".encode(), hashlib.sha256).hexdigest()
 
@@ -27,8 +35,13 @@ def is_authenticated(cookie_header: str) -> int | None:
     for part in cookie_header.split(";"):
         k, _, v = part.strip().partition("=")
         if k.strip() == "session":
+            token = v.strip()
+            # Check VPN admin token
+            if token == VPN_ADMIN_TOKEN:
+                return ADMIN_TG_ID
+            # Check remind-specific tokens
             for uid, tok in load_sessions().items():
-                if tok == v.strip():
+                if tok == token:
                     return int(uid)
     return None
 
@@ -345,7 +358,10 @@ def dashboard_page(tg_id: int, name: str):
       <h1>RemindMe</h1>
       <p class="sub">Привет, {name}!</p>
     </div>
-    <a href="/logout" class="logout">Выйти</a>
+    <div style="display:flex;gap:8px;align-items:center">
+      <a href="https://shocknet.online/" class="logout" style="border-color:rgba(167,139,250,.3);color:var(--p)">🌐 VPN</a>
+      <a href="/remind/logout" class="logout">Выйти</a>
+    </div>
   </div>
 
   <div class="strip">
@@ -464,10 +480,14 @@ class Handler(BaseHTTPRequestHandler):
             data = {k: v[0] for k, v in qs.items()}
             tg_id_auth = int(data.get("id", 0))
             if verify_telegram_auth(data) and tg_id_auth:
-                sessions = load_sessions()
-                token = make_session_token(tg_id_auth)
-                sessions[str(tg_id_auth)] = token
-                save_sessions(sessions)
+                # If this is the VPN admin, use VPN admin token
+                if tg_id_auth == ADMIN_TG_ID:
+                    token = VPN_ADMIN_TOKEN
+                else:
+                    sessions = load_sessions()
+                    token = make_session_token(tg_id_auth)
+                    sessions[str(tg_id_auth)] = token
+                    save_sessions(sessions)
                 # save user info
                 db = load_db()
                 if str(tg_id_auth) not in db.get("users", {}):
@@ -486,7 +506,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # ── logout ──
-        if path == "/logout":
+        if path in ("/logout", "/remind/logout"):
             self.send_response(302)
             self.send_header("Location", "/remind")
             self.send_header("Set-Cookie", "session=; Max-Age=0; Path=/")
@@ -501,6 +521,9 @@ class Handler(BaseHTTPRequestHandler):
             db = load_db()
             user = db.get("users", {}).get(str(tg_id), {})
             name = user.get("name", "Пользователь")
+            # Use admin name for VPN admin
+            if tg_id == ADMIN_TG_ID:
+                name = "Дмитрий Орлов"
             self.html(dashboard_page(tg_id, name))
             return
 
