@@ -11,8 +11,9 @@ load_dotenv("/opt/vpnserver/.env")
 BOT_TOKEN = os.getenv("REMIND_BOT_TOKEN", "")
 BOT_USERNAME = os.getenv("REMIND_BOT_USERNAME", "RemindMeShockBot")
 SESSION_SECRET = os.getenv("SESSION_SECRET") or secrets.token_hex(32)
-DOMAIN = os.getenv("REMIND_DOMAIN", "remind.shocknet.online")
+DOMAIN = os.getenv("REMIND_DOMAIN", "shocknet.online")
 WEB_PORT = 5050
+PREFIX = "/remind"
 USERS_FILE = Path("/opt/remindbot/users.json")
 REMINDERS_FILE = Path("/opt/remindbot/reminders.json")
 
@@ -410,7 +411,7 @@ h2{{font-size:1.5rem;font-weight:700;margin-bottom:6px;
     <script async src="https://telegram.org/js/telegram-widget.js?22"
       data-telegram-login="{BOT_USERNAME}"
       data-size="large"
-      data-auth-url="https://{DOMAIN}/tg-auth"
+      data-auth-url="https://{DOMAIN}/remind/tg-auth"
       data-request-access="write"></script>
   </div>
   {err_html}
@@ -447,6 +448,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        # Strip /remind prefix for subpath routing
+        if path.startswith("/remind"):
+            path = path[7:] or "/"
         tg_id = is_authenticated(self.cookies())
 
         # ── login ──
@@ -473,7 +477,7 @@ class Handler(BaseHTTPRequestHandler):
                     }
                     save_db(db)
                 self.send_response(302)
-                self.send_header("Location", "/dashboard")
+                self.send_header("Location", "/remind/dashboard")
                 self.send_header("Set-Cookie",
                     f"session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000")
                 self.end_headers()
@@ -484,7 +488,7 @@ class Handler(BaseHTTPRequestHandler):
         # ── logout ──
         if path == "/logout":
             self.send_response(302)
-            self.send_header("Location", "/")
+            self.send_header("Location", "/remind")
             self.send_header("Set-Cookie", "session=; Max-Age=0; Path=/")
             self.end_headers()
             return
@@ -492,7 +496,7 @@ class Handler(BaseHTTPRequestHandler):
         # ── dashboard ──
         if path in ("/dashboard", "/dashboard/"):
             if not tg_id:
-                self.redirect("/login")
+                self.redirect("/remind/login")
                 return
             db = load_db()
             user = db.get("users", {}).get(str(tg_id), {})
@@ -503,7 +507,7 @@ class Handler(BaseHTTPRequestHandler):
         # ── landing ──
         if path in ("/", "/index.html"):
             if tg_id:
-                self.redirect("/dashboard")
+                self.redirect("/remind/dashboard")
             else:
                 self.html(landing_page())
             return
@@ -511,12 +515,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(404); self.end_headers()
 
     def do_POST(self):
+        path = self.path.split("?")[0]
+        if path.startswith("/remind"):
+            path = path[7:] or "/"
         tg_id = is_authenticated(self.cookies())
         if not tg_id:
             self.json_response({"error": "unauthorized"}, 401)
             return
 
-        if self.path == "/api/reminders":
+        if path == "/api/reminders":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length).decode()
             data = urllib.parse.parse_qs(body)
@@ -530,19 +537,22 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 add_reminder(tg_id, text, remind_at)
-            self.redirect("/dashboard")
+            self.redirect("/remind/dashboard")
             return
 
         self.send_response(405); self.end_headers()
 
     def do_PUT(self):
+        path = self.path.split("?")[0]
+        if path.startswith("/remind"):
+            path = path[7:] or "/"
         tg_id = is_authenticated(self.cookies())
         if not tg_id:
             self.json_response({"error": "unauthorized"}, 401)
             return
 
-        if self.path.startswith("/api/reminders/"):
-            rid = self.path[len("/api/reminders/"):]
+        if path.startswith("/api/reminders/"):
+            rid = path[len("/api/reminders/"):]
             length = int(self.headers.get("Content-Length", 0))
             data = json.loads(self.rfile.read(length))
             text = data.get("text", "")
@@ -560,13 +570,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(405); self.end_headers()
 
     def do_DELETE(self):
+        path = self.path.split("?")[0]
+        if path.startswith("/remind"):
+            path = path[7:] or "/"
         tg_id = is_authenticated(self.cookies())
         if not tg_id:
             self.json_response({"error": "unauthorized"}, 401)
             return
 
-        if self.path.startswith("/api/reminders/"):
-            rid = self.path[len("/api/reminders/"):]
+        if path.startswith("/api/reminders/"):
+            rid = path[len("/api/reminders/"):]
             ok = delete_reminder(rid, tg_id)
             self.json_response({"ok": ok})
             return
