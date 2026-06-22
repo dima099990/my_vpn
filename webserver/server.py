@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import base64, collections, hashlib, hmac, io, json, os, secrets, subprocess, threading, time, urllib.parse, yaml
+import base64, collections, hashlib, hmac, io, json, os, secrets, subprocess, threading, time, urllib.parse, urllib.request, yaml
 import qrcode
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from dotenv import load_dotenv
@@ -140,6 +140,18 @@ def all_users_for_stats() -> list:
             "email":    email,
             "label":    u.get("name", f"User {tuid}"),
             "approved": u.get("approved", False),
+        })
+    # Тестовые (trial) ключи — полноценно в статистике, с пометкой
+    for token, t in db.get("trial_keys", {}).items():
+        email = t.get("email")
+        if not email:
+            continue
+        base_label = t.get("label", "Тестовый")
+        out.append({
+            "email":    email,
+            "label":    f"🧪 {base_label} (тестовый ключ)",
+            "approved": True,
+            "trial":    True,
         })
     return out
 
@@ -1370,7 +1382,7 @@ def admin_page() -> str:
     </div>
   </div>
 
-  <a href="http://{SERVER_IP}:8006" target="_blank" class="pxbtn">
+  <a href="https://proxmox.shocknet.online" target="_blank" class="pxbtn">
     <svg width="28" height="28" viewBox="0 0 120 120" fill="none">
       <rect width="120" height="120" rx="24" fill="#E57000"/>
       <path d="M28 38h28l-8 14h16l-36 30 10-20H22l6-24z" fill="white"/>
@@ -1380,7 +1392,7 @@ def admin_page() -> str:
       <span class="pxname">Proxmox VE</span>
       <span class="pxsub">Открыть панель управления →</span>
     </div>
-    <div class="pxport">:8006</div>
+    <div class="pxport">proxmox.shocknet.online</div>
   </a>
 </div>
 <script>{JS}</script>
@@ -1689,6 +1701,7 @@ class Handler(BaseHTTPRequestHandler):
                         "email":    u["email"],
                         "label":    u["label"],
                         "approved": u.get("approved", True),
+                        "trial":    u.get("trial", False),
                         "uplink":   ul,
                         "downlink": dl,
                     })

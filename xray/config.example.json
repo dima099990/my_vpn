@@ -37,31 +37,31 @@
       "settings": {
         "clients": [
           {
-            "id": "YOUR_UUID",
+            "id": "0bda67c1-3073-4aed-876b-c7301efe7e0c",
             "email": "user1_ws"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "b54d7e54-7248-4d2e-919e-7da71a91e0f0",
             "email": "user1_admin_ws"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "39b7e922-4281-4d0a-b63e-02e598b95863",
             "email": "tg_8677536826_ws"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "bccffd1a-e93a-4312-a491-52f378ace0e5",
             "email": "tg_1483599707_ws"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "986c8121-1869-41ca-bae9-6954860e947f",
             "email": "trial_S_uxiXlj"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "a3cefaa1-fe5a-4d0d-ba37-4e0805d5b9ce",
             "email": "tg_1483599707"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "23b19e9c-85eb-4b2e-8697-8389135df879",
             "email": "trial_i4vPubAH"
           }
         ],
@@ -100,30 +100,30 @@
       "settings": {
         "clients": [
           {
-            "id": "YOUR_UUID",
+            "id": "0bda67c1-3073-4aed-876b-c7301efe7e0c",
             "email": "user1",
             "flow": "xtls-rprx-vision"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "b54d7e54-7248-4d2e-919e-7da71a91e0f0",
             "email": "user1_admin",
             "flow": "xtls-rprx-vision"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "39b7e922-4281-4d0a-b63e-02e598b95863",
             "email": "tg_8677536826",
             "flow": "xtls-rprx-vision"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "986c8121-1869-41ca-bae9-6954860e947f",
             "email": "trial_S_uxiXlj"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "a3cefaa1-fe5a-4d0d-ba37-4e0805d5b9ce",
             "email": "tg_1483599707"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "23b19e9c-85eb-4b2e-8697-8389135df879",
             "email": "trial_i4vPubAH"
           }
         ],
@@ -139,7 +139,7 @@
           "serverNames": [
             "www.microsoft.com"
           ],
-          "privateKey": "YOUR_PRIVATE_KEY",
+          "privateKey": "mCVSvmMcxQIq0C7telyCXm2oAfPiR2_2x1ie_tEytGI",
           "shortIds": [
             "d4d93c76246769b6"
           ]
@@ -162,27 +162,27 @@
       "settings": {
         "clients": [
           {
-            "id": "YOUR_UUID",
+            "id": "0bda67c1-3073-4aed-876b-c7301efe7e0c",
             "email": "user1_happ"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "b54d7e54-7248-4d2e-919e-7da71a91e0f0",
             "email": "user1_admin_happ"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "39b7e922-4281-4d0a-b63e-02e598b95863",
             "email": "tg_8677536826_happ"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "986c8121-1869-41ca-bae9-6954860e947f",
             "email": "trial_S_uxiXlj"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "a3cefaa1-fe5a-4d0d-ba37-4e0805d5b9ce",
             "email": "tg_1483599707"
           },
           {
-            "id": "YOUR_UUID",
+            "id": "23b19e9c-85eb-4b2e-8697-8389135df879",
             "email": "trial_i4vPubAH"
           }
         ],
@@ -198,7 +198,7 @@
           "serverNames": [
             "www.microsoft.com"
           ],
-          "privateKey": "YOUR_PRIVATE_KEY",
+          "privateKey": "mCVSvmMcxQIq0C7telyCXm2oAfPiR2_2x1ie_tEytGI",
           "shortIds": [
             "d4d93c76246769b6"
           ]
